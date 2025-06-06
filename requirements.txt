@@ -12,6 +12,6 @@ pandas==2.2.2
 plotly==5.22.0
 python-Levenshtein==0.25.1
 oauth2client>=4.0.0
-gspread-dataframe==3.4.2
+gspread-dataframe>=3.3.0
 statsmodels==0.14.2
 gunicorn==22.0.0 
