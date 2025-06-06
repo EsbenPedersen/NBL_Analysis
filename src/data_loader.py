@@ -1,27 +1,34 @@
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
+from gspread_dataframe import get_as_dataframe
 import pandas as pd
 from typing import Dict
+import os
+import json
 
 def get_google_sheets_data() -> Dict[str, pd.DataFrame]:
     """
-    Authenticates with Google Sheets API using service account credentials
-    and fetches all worksheets from "Season 24 Draft" and "Showcase Stats"
-    spreadsheets.
+    Fetches data from Google Sheets using service account credentials.
+
+    It first tries to load credentials from an environment variable,
+    which is suitable for production deployment. If not found, it falls back
+    to a local 'credentials.json' file for local development.
 
     Returns:
-        A dictionary mapping sheet titles to pandas DataFrames.
+        dict: A dictionary of pandas DataFrames, where each key is a sheet name.
     """
-    # Define the scope
-    scope = [
-        'https://spreadsheets.google.com/feeds',
-        'https://www.googleapis.com/auth/drive'
-    ]
-
-    # Add credentials to the account
-    creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
-
-    # Authorize the clientsheet
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    
+    creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
+    
+    if creds_json_str:
+        # Load credentials from environment variable (for production)
+        creds_info = json.loads(creds_json_str)
+        creds = Credentials.from_service_account_info(creds_info, scopes=scope)
+    else:
+        # Load credentials from local file (for local development)
+        creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
+        
     client = gspread.authorize(creds)
 
     # Fetch data from "Season 24 Draft"

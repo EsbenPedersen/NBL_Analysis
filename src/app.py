@@ -35,7 +35,7 @@ def preprocess_size_data(size_data):
     if max_val is None or max_val == 0 or max_val == size_data.min():
         return pd.Series(10, index=size_data.index)
     size_data = 10 + ((size_data - size_data.min()) / (max_val - size_data.min())) * 40
-    return size_data
+    return size_data.round(3)
 
 # --- App Layout ---
 app.layout = html.Div([

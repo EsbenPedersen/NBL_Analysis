@@ -199,3 +199,11 @@ cython_debug/
 *.swp
 *.swo
 *~
+
+# New additions from the code block
+/target
+/node_modules
+*.jar
+*.js
+*.zip
+*.war
