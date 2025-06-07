@@ -279,8 +279,8 @@ def update_controls(json_data, filters):
     if not json_data: return []
     filters = filters or {}
     
-    defaults = {'x_val': 'Overall Rating', 'y_val': 'Points', 'color_val': 'Position', 'size_val': 'Minutes',
-                'name_val': [], 'pos_val': [], 'team_val': [], 'text_val': [], 'drafted_val': [], 'exclude_zeros_val': []}
+    defaults = {'x_val': 'VORP', 'y_val': 'Game Score', 'color_val': 'A/TO', 'size_val': 'PPM',
+                'name_val': [], 'pos_val': [], 'team_val': [], 'text_val': [], 'drafted_val': [], 'exclude_zeros_val': ['exclude']}
     
     df = pd.read_json(StringIO(json_data), orient='split')
     numeric_cols = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
@@ -411,8 +411,8 @@ def update_scatter_plot(json_data, filters):
     if 'include' not in filters.get('drafted_val', []):
         df = df[df['Draft Status'] == 'Available']
         
-    x_col = filters.get('x_val', 'Overall Rating')
-    y_col = filters.get('y_val', 'Points')
+    x_col = filters.get('x_val', 'VORP')
+    y_col = filters.get('y_val', 'Game Score')
     
     if 'exclude' in filters.get('exclude_zeros_val', []):
         if x_col in df.columns and y_col in df.columns:
