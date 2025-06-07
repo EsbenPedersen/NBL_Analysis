@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 
 def calculate_z_scores(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -16,7 +17,7 @@ def calculate_z_scores(df: pd.DataFrame) -> pd.DataFrame:
     
     # Invert 'Turnovers' so that a higher score is better.
     if 'Turnovers' in players_df.columns:
-        players_df['Turnovers_inv'] = players_df['Turnovers'].max() - players_df['Turnovers']
+        players_df['Turnovers_inv'] = -players_df['Turnovers']
         z_score_cats.append('Turnovers_inv')
 
     # Calculate Z-scores for each category
@@ -33,54 +34,80 @@ def calculate_z_scores(df: pd.DataFrame) -> pd.DataFrame:
     z_score_cols = [f'{cat}_zscore' for cat in z_score_cats if f'{cat}_zscore' in players_df.columns]
     players_df['Value'] = players_df[z_score_cols].sum(axis=1)
     
-    return players_df.sort_values(by='Value', ascending=False)
+    return players_df
 
-def get_draft_recommendations(available_players: pd.DataFrame) -> (pd.DataFrame, pd.DataFrame):
+def get_draft_recommendations(available_players: pd.DataFrame, league_size: int = 12, roster_spots: int = 2) -> (pd.DataFrame, pd.DataFrame):
     """
-    Generates an ideal team and a prioritized draft board from available players.
+    Generates draft recommendations using a Value Over Replacement Player (VORP) model.
+    
+    Args:
+        available_players (pd.DataFrame): DataFrame of players available to be drafted.
+        league_size (int): Number of teams in the league.
+        roster_spots (int): Number of players drafted per position for VORP calculation.
+
+    Returns:
+        A tuple of two DataFrames: (ideal_team, draft_board).
     """
     if available_players.empty:
         return pd.DataFrame(), pd.DataFrame()
         
-    # 1. Calculate value scores for all available players
+    # 1. Calculate a baseline 'Value' for all players
     scored_players = calculate_z_scores(available_players)
     
-    # 2. Identify the top 2 players for each position (Ideal Team)
-    ideal_team_list = []
     positions = ['PG', 'SG', 'SF', 'PF', 'C']
-    for pos in positions:
-        top_players = scored_players[scored_players['Position'] == pos].head(2)
-        ideal_team_list.append(top_players)
-        
-    ideal_team = pd.concat(ideal_team_list).reset_index(drop=True)
-    if 'Value' in ideal_team.columns:
-        ideal_team['Value'] = ideal_team['Value'].round(3)
     
-    # 3. Calculate "Value Over Next Available" (VONA) to prioritize picks
-    draft_board_list = []
+    # 2. Determine Replacement Level for each position
+    replacement_levels = {}
     for pos in positions:
-        pos_players = scored_players[scored_players['Position'] == pos].reset_index(drop=True)
-        if len(pos_players) > 2:
-            # VONA is the value gap between this player and the first player NOT in the ideal team
-            vona_score = pos_players.loc[1, 'Value'] - pos_players.loc[2, 'Value']
-            # We assign this VONA to the top 2 players of this position
-            for i in range(min(2, len(pos_players))):
-                player_data = pos_players.loc[i].to_dict()
-                player_data['VONA'] = vona_score
-                draft_board_list.append(player_data)
-        elif len(pos_players) > 0:
-             # If there are 2 or fewer players, their scarcity is high. VONA is their own value.
-            for i in range(len(pos_players)):
-                player_data = pos_players.loc[i].to_dict()
-                player_data['VONA'] = player_data['Value'] # High scarcity
-                draft_board_list.append(player_data)
+        pos_players = scored_players[scored_players['Position'] == pos].sort_values('Value', ascending=False)
+        replacement_idx = min(len(pos_players) - 1, league_size * roster_spots)
+        
+        if not pos_players.empty:
+            replacement_levels[pos] = pos_players.iloc[replacement_idx]['Value']
+        else:
+            replacement_levels[pos] = 0 # Default to 0 if no players for a position
 
-    draft_board = pd.DataFrame(draft_board_list)
-    if 'Value' in draft_board.columns:
-        draft_board['Value'] = draft_board['Value'].round(3)
-    if 'VONA' in draft_board.columns:
-        draft_board['VONA'] = draft_board['VONA'].round(3)
+    # 3. Calculate VORP for each player
+    scored_players['VORP'] = scored_players.apply(
+        lambda row: row['Value'] - replacement_levels.get(row['Position'], 0),
+        axis=1
+    )
+
+    # 4. Generate the Ideal Team (Top 2 players by VORP at each position)
+    ideal_team_list = []
+    for pos in positions:
+        top_players = scored_players[scored_players['Position'] == pos].sort_values('VORP', ascending=False).head(2)
+        ideal_team_list.append(top_players)
+    ideal_team = pd.concat(ideal_team_list).reset_index(drop=True)
+
+    # 5. Calculate Value Over Next Available (VONA)
+    vona_list = []
+    for index, player in scored_players.iterrows():
+        pos = player['Position']
+        # Find the next best player at the same position
+        next_best_players = scored_players[
+            (scored_players['Position'] == pos) & 
+            (scored_players['Name'] != player['Name'])
+        ].sort_values('VORP', ascending=False)
+        
+        if not next_best_players.empty:
+            next_best_vorp = next_best_players.iloc[0]['VORP']
+            vona = player['VORP'] - next_best_vorp
+        else:
+            vona = player['VORP'] # If they are the only one, their VONA is their VORP
+            
+        player_data = player.to_dict()
+        player_data['VONA'] = vona
+        vona_list.append(player_data)
+
+    draft_board = pd.DataFrame(vona_list)
+
+    # Clean up and sort final dataframes
+    for df in [ideal_team, draft_board]:
+        for col in ['Value', 'VORP', 'VONA']:
+            if col in df.columns:
+                df[col] = df[col].round(3)
 
     draft_board = draft_board.sort_values(by='VONA', ascending=False).reset_index(drop=True)
     
-    return ideal_team, draft_board 
+    return ideal_team, draft_board.head(10) 

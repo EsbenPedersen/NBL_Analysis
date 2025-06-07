@@ -32,15 +32,20 @@ def get_google_sheets_data() -> Dict[str, pd.DataFrame]:
     client = gspread.authorize(creds)
 
     # Fetch data from "Season 24 Draft"
-    draft_sh = client.open('Season 24 Draft - test')
+    # draft_sh = client.open('Season 24 Draft - test')
+    draft_sh = client.open('Season 24 Draft')
     dataframes = {}
     for sheet in draft_sh.worksheets():
         dataframes[f"draft_{sheet.title}"] = pd.DataFrame(sheet.get_all_values())
 
-    # Fetch data from "Showcase Stats"
+    # Fetch data from "Showcase Stats", only the "Averages" tab
     stats_sh = client.open('Showcase Stats - test')
-    for sheet in stats_sh.worksheets():
-        dataframes[f"stats_{sheet.title}"] = pd.DataFrame(sheet.get_all_values())
+    try:
+        worksheet = stats_sh.worksheet('Averages')
+        dataframes['stats_Averages'] = pd.DataFrame(worksheet.get_all_values())
+    except gspread.WorksheetNotFound:
+        # If "Averages" sheet is not found, create an empty DataFrame
+        dataframes['stats_Averages'] = pd.DataFrame()
 
     return dataframes 
 

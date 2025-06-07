@@ -4,26 +4,55 @@ from typing import Dict
 from src.advanced_stats import calculate_advanced_stats
 
 def clean_up_stats_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Cleans up the statistics DataFrame."""
+    """
+    Cleans up the statistics DataFrame by standardizing column names,
+    parsing percentage values, and coercing data types.
+    """
     if df.empty:
         return df
+
     df.columns = df.iloc[0].astype(str)
     df = df.drop(index=0).reset_index(drop=True)
 
-    seen = {}
-    new_columns = []
-    for col in df.columns:
-        if col not in seen:
-            seen[col] = 1
-            new_columns.append(col)
-        else:
-            seen[col] += 1
-            new_columns.append(f"{col}_{seen[col]}")
-    df.columns = new_columns
+    # 1. Basic cleanup and standardization of column names
+    df.columns = [col.strip() for col in df.columns]
+    column_mapping = {
+        'Assist': 'Assists',
+        'Steal': 'Steals',
+        'Field Goal Per.': 'FG%',
+        'Three Point Per.': '3pt%',
+        'Free Throw Per.': 'FT%',
+        'Effective FG': 'EFG%',
+        'True Shooting': 'TS%',
+        'A/TO Ratio': 'A/TO',
+        'AST/TO': 'A/TO',
+        'Player Efficency': 'PER',
+        'Value Over Replacement Player': 'VORP',
+        'FG Attempt': 'FG Attempted',
+        '3FG Made': '3pt Made',
+        '3FG Attempt': '3pt Attempted',
+        'FT Attempt': 'FT Attempted',
+    }
+    df.rename(columns=column_mapping, inplace=True)
 
-    df["Name"] = df["Name"].astype(str)
+    # 2. Remove empty and duplicate columns
+    if '' in df.columns:
+        df = df.drop(columns=[''])
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    # 3. Handle percentage columns
+    percentage_cols = ['FG%', '3pt%', 'FT%', 'EFG%', 'TS%']
+    for col in percentage_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.replace('%', '', regex=False)
+            df[col] = pd.to_numeric(df[col], errors='coerce') / 100.0
+
+    # 4. Coerce all other columns to their proper types
+    if "Name" in df.columns:
+        df["Name"] = df["Name"].astype(str)
+
     for col in df.columns:
-        if col != "Name":
+        if col != "Name" and col not in percentage_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
     return df
