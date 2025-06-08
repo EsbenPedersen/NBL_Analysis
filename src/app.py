@@ -239,19 +239,23 @@ def update_filters_store(x, y, color, size, names, positions, teams, text, draft
         
         elif tr_type == 'min-input':
             new_min = min_map.get(tr_index)
-            current_max = slider_map.get(tr_index, [None, None])[1]
-            if new_min is not None and current_max is not None:
-                if new_min > current_max:
-                    new_min = current_max
-                slider_state[tr_index] = [new_min, current_max]
+            if new_min is not None:
+                current_range = slider_state.get(tr_index, slider_map.get(tr_index, [None, None]))
+                current_max = current_range[1] if isinstance(current_range, list) and len(current_range) > 1 else None
+                if current_max is not None:
+                    if new_min > current_max:
+                        new_min = current_max
+                    slider_state[tr_index] = [new_min, current_max]
         
         elif tr_type == 'max-input':
             new_max = max_map.get(tr_index)
-            current_min = slider_map.get(tr_index, [None, None])[0]
-            if new_max is not None and current_min is not None:
-                if new_max < current_min:
-                    new_max = current_min
-                slider_state[tr_index] = [current_min, new_max]
+            if new_max is not None:
+                current_range = slider_state.get(tr_index, slider_map.get(tr_index, [None, None]))
+                current_min = current_range[0] if isinstance(current_range, list) and len(current_range) > 0 else None
+                if current_min is not None:
+                    if new_max < current_min:
+                        new_max = current_min
+                    slider_state[tr_index] = [current_min, new_max]
     else:
         current_filters.update({
             'x_val': x, 'y_val': y, 'color_val': color, 'size_val': size,
@@ -349,20 +353,22 @@ def update_sliders(json_data, filters):
                     dbc.Input(
                         id={'type': 'min-input', 'index': col}, type='number', value=f"{current_min:.2f}",
                         step=step, min=min_val, max=max_val, debounce=True,
-                    ), width=2
+                        size="sm", style={"fontSize": "0.875rem", "textAlign": "center"}
+                    ), width=3
                 ),
                 dbc.Col(
                     dcc.RangeSlider(
                         id={'type': 'filter-slider', 'index': col}, min=min_val, max=max_val,
                         value=[current_min, current_max], step=step, marks=None,
                         tooltip={"placement": "bottom", "always_visible": False},
-                    ), width=8
+                    ), width=6
                 ),
                 dbc.Col(
                     dbc.Input(
                         id={'type': 'max-input', 'index': col}, type='number', value=f"{current_max:.2f}",
                         step=step, min=min_val, max=max_val, debounce=True,
-                    ), width=2
+                        size="sm", style={"fontSize": "0.875rem", "textAlign": "center"}
+                    ), width=3
                 )
             ], align="center"),
             dbc.Row([
@@ -378,6 +384,59 @@ def update_sliders(json_data, filters):
             row_cols = []
     
     return rows
+
+@app.callback(
+    [Output({'type': 'filter-slider', 'index': dash.MATCH}, 'value'),
+     Output({'type': 'min-input', 'index': dash.MATCH}, 'value'),
+     Output({'type': 'max-input', 'index': dash.MATCH}, 'value')],
+    [Input({'type': 'min-input', 'index': dash.MATCH}, 'value'),
+     Input({'type': 'max-input', 'index': dash.MATCH}, 'value'),
+     Input({'type': 'filter-slider', 'index': dash.MATCH}, 'value')],
+    [State({'type': 'min-input', 'index': dash.MATCH}, 'id'),
+     State('data-store', 'data')],
+    prevent_initial_call=True
+)
+def sync_slider_inputs(min_input, max_input, slider_value, input_id, json_data):
+    """Synchronize slider and input values."""
+    if not json_data:
+        return dash.no_update, dash.no_update, dash.no_update
+    
+    triggered = ctx.triggered_id
+    df = pd.read_json(StringIO(json_data), orient='split')
+    col = input_id['index']
+    
+    if col not in df.columns:
+        return dash.no_update, dash.no_update, dash.no_update
+    
+    min_val = df[col].min()
+    max_val = df[col].max()
+    
+    if pd.isna(min_val) or pd.isna(max_val):
+        min_val, max_val = 0, 1
+    
+    if min_val == max_val:
+        max_val = min_val + 1
+    
+    # Convert inputs to floats, handling None/empty values
+    try:
+        min_input = float(min_input) if min_input is not None and min_input != '' else min_val
+        max_input = float(max_input) if max_input is not None and max_input != '' else max_val
+    except (ValueError, TypeError):
+        min_input = min_val
+        max_input = max_val
+    
+    # Ensure bounds are respected
+    min_input = max(min_val, min_input)
+    max_input = min(max_val, max_input)
+    
+    # Ensure min <= max
+    if min_input > max_input:
+        if triggered and triggered.get('type') == 'min-input':
+            max_input = min_input
+        else:
+            min_input = max_input
+    
+    return [min_input, max_input], f"{min_input:.2f}", f"{max_input:.2f}"
 
 @app.callback(
     Output('scatter-plot', 'figure'),
