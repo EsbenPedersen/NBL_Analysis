@@ -10,4 +10,6 @@ statsmodels==0.14.2
 numpy==1.26.4
 gunicorn==22.0.0
 google-api-python-client>=2.0.0
-google-auth>=2.15.0 
+google-auth>=2.15.0
+fuzzywuzzy==0.18.0
+python-Levenshtein==0.25.1 

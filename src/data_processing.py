@@ -2,6 +2,20 @@ import re
 import pandas as pd
 from typing import Dict
 from src.advanced_stats import calculate_advanced_stats
+from fuzzywuzzy import process as fuzzy_process, fuzz
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def _get_best_match(name_key: str, choices: list[str], score_cutoff: int = 90) -> tuple[str | None, int]:
+    """Finds the best fuzzy match for a key in a list of choices."""
+    if not name_key or not choices:
+        return None, 0
+    match, score = fuzzy_process.extractOne(name_key, choices, scorer=fuzz.token_sort_ratio)
+    if score >= score_cutoff:
+        return match, score
+    return None, score
 
 def clean_up_stats_df(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -76,10 +90,128 @@ def clean_up_draft_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.rename(columns={df.columns[0]: "Round"})
     return df
 
+def _standardize_name(name: str) -> str:
+    """Standardizes a name by splitting it into parts, sorting them, and rejoining."""
+    if not isinstance(name, str):
+        return ''
+    # Find all sequences of word characters
+    parts = re.findall(r'\w+', name)
+    # Convert to lowercase, sort, and join
+    sorted_parts = sorted([part.lower() for part in parts if part])
+    return ''.join(sorted_parts)
+
 def process_data(dataframes: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     """
     Processes the raw data from Google Sheets into a single DataFrame
     for the Dash application.
+    """
+    # 1. Load master player list from snapshot sheets
+    snapshot_players_dfs = []
+    positions = ['PG', 'SG', 'SF', 'PF', 'C']
+    for pos in positions:
+        sheet_name = f'snapshot_{pos}'
+        if sheet_name in dataframes and not dataframes[sheet_name].empty:
+            df = clean_up_available_players_df(dataframes[sheet_name].copy())
+            df['Position'] = pos
+            snapshot_players_dfs.append(df)
+
+    if not snapshot_players_dfs:
+        logging.warning("Snapshot sheets not found or empty. Falling back to legacy processing.")
+        return _process_data_legacy(dataframes)
+
+    master_player_list = pd.concat(snapshot_players_dfs, ignore_index=True)
+    master_player_list = master_player_list.rename(columns={'Player': 'Name'})
+    master_player_list['name_key'] = master_player_list['Name'].apply(_standardize_name)
+    canonical_keys = list(master_player_list['name_key'].unique())
+
+    # 2. Process Draft Sheet to get drafted players info
+    draft_sheet_raw = dataframes.get('draft_Draft Sheet')
+    drafted_players_list = []
+    if draft_sheet_raw is not None and not draft_sheet_raw.empty:
+        draft_sheet = clean_up_draft_df(draft_sheet_raw.copy())
+        all_teams = [col for col in draft_sheet.columns if col != 'Round']
+        
+        # Create a mapping from GM first names to full team headers
+        gm_map = {}
+        for team_header in all_teams:
+            gm_name = team_header.split('(')[0].strip()
+            if gm_name:
+                first_name = gm_name.split()[0]
+                std_first_name = _standardize_name(first_name)
+                if std_first_name not in gm_map:
+                    gm_map[std_first_name] = team_header
+
+        melted_draft = draft_sheet.melt(id_vars="Round", var_name="OriginalTeam", value_name="CellText")
+        melted_draft = melted_draft[melted_draft['CellText'].str.strip() != '']
+
+        for _, row in melted_draft.iterrows():
+            cell_text, original_team = row['CellText'].strip(), row['OriginalTeam']
+            final_team, player_string = original_team, cell_text
+
+            trade_match = re.match(r'To\s+([^:]+):\s*(.*)', cell_text, re.IGNORECASE)
+            if trade_match:
+                target_gm_name, player_string = trade_match.group(1).strip(), trade_match.group(2).strip()
+                std_target_gm = _standardize_name(target_gm_name)
+                
+                resolved_team = gm_map.get(std_target_gm)
+                if resolved_team:
+                    final_team = resolved_team
+                else:
+                    # Fallback to fuzzy matching on the GM first names
+                    best_gm_match, score = _get_best_match(std_target_gm, list(gm_map.keys()), score_cutoff=85)
+                    if best_gm_match:
+                        final_team = gm_map[best_gm_match]
+                    else:
+                        logging.warning(f"Could not resolve traded team for GM '{target_gm_name}'. Using original team '{original_team}'.")
+
+            player_name = re.match(r'^(.*?)\s*(?:\(\d+\))?$', player_string).group(1).strip() if player_string else ''
+            if not player_name: continue
+
+            drafted_players_list.append({
+                'name_key': _standardize_name(player_name),
+                'Original Name': player_name, 'Team': final_team,
+                'Round Picked': row['Round'], 'Draft Status': 'Drafted'
+            })
+    drafted_players_df = pd.DataFrame(drafted_players_list)
+
+    # 3. Process Stats Sheet
+    averages_df = clean_up_stats_df(dataframes.get('stats_Averages', pd.DataFrame()))
+    if not averages_df.empty:
+        averages_df['name_key'] = averages_df['Name'].apply(_standardize_name)
+
+    # 4. Map keys from drafted and stats dataframes to the canonical master list keys
+    if not drafted_players_df.empty:
+        drafted_players_df['canonical_key'] = drafted_players_df['name_key'].apply(
+            lambda x: _get_best_match(x, canonical_keys)[0]
+        )
+    if not averages_df.empty:
+        averages_df['canonical_key'] = averages_df['name_key'].apply(
+            lambda x: _get_best_match(x, canonical_keys)[0]
+        )
+
+    # 5. Merge dataframes
+    merged_df = master_player_list
+    if not drafted_players_df.empty:
+        draft_info_to_merge = drafted_players_df[['canonical_key', 'Team', 'Round Picked', 'Draft Status']].dropna(subset=['canonical_key']).drop_duplicates(subset=['canonical_key'])
+        merged_df = pd.merge(merged_df, draft_info_to_merge, left_on='name_key', right_on='canonical_key', how='left')
+        merged_df.drop(columns=['canonical_key'], inplace=True)
+
+    if not averages_df.empty:
+        stats_to_merge = averages_df.drop(columns=['Name', 'name_key']).dropna(subset=['canonical_key']).drop_duplicates(subset=['canonical_key'])
+        merged_df = pd.merge(merged_df, stats_to_merge, left_on='name_key', right_on='canonical_key', how='left')
+        merged_df.drop(columns=['canonical_key'], inplace=True, errors='ignore')
+
+    merged_df['Draft Status'] = merged_df['Draft Status'].fillna('Available')
+    merged_df['Team'] = merged_df['Team'].fillna('None')
+    merged_df['Round Picked'] = merged_df['Round Picked'].fillna('Unpicked')
+    merged_df.drop(columns=['name_key'], inplace=True, errors='ignore')
+    
+    # 6. Calculate advanced stats
+    return calculate_advanced_stats(merged_df)
+
+def _process_data_legacy(dataframes: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """
+    Original data processing logic for when snapshot is not available.
     """
     # 1. Process available players from PG, SG, etc. sheets
     available_players_dfs = []
