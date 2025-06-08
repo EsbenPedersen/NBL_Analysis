@@ -196,7 +196,7 @@ def update_data_store(n_intervals, n_clicks):
     [Input('x-column', 'value'), Input('y-column', 'value'), Input('color-column', 'value'),
      Input('size-column', 'value'), Input('name-dropdown', 'value'), Input('position-dropdown', 'value'),
      Input('team-dropdown', 'value'), Input('toggle-text-labels', 'value'), Input('include-drafted-toggle', 'value'),
-     Input('exclude-zeros-toggle', 'value'),
+     Input('exclude-undrafted-toggle', 'value'), Input('exclude-zeros-toggle', 'value'),
      Input({'type': 'filter-slider', 'index': dash.ALL}, 'value'),
      Input({'type': 'min-input', 'index': dash.ALL}, 'value'),
      Input({'type': 'max-input', 'index': dash.ALL}, 'value')],
@@ -206,7 +206,7 @@ def update_data_store(n_intervals, n_clicks):
      State('filters-store', 'data')],
     prevent_initial_call=True
 )
-def update_filters_store(x, y, color, size, names, positions, teams, text, drafted, exclude_zeros,
+def update_filters_store(x, y, color, size, names, positions, teams, text, drafted, exclude_undrafted, exclude_zeros,
                          slider_values, min_inputs, max_inputs,
                          slider_ids, min_input_ids, max_input_ids,
                          current_filters):
@@ -256,7 +256,7 @@ def update_filters_store(x, y, color, size, names, positions, teams, text, draft
         current_filters.update({
             'x_val': x, 'y_val': y, 'color_val': color, 'size_val': size,
             'name_val': names, 'pos_val': positions, 'team_val': teams,
-            'text_val': text, 'drafted_val': drafted, 'exclude_zeros_val': exclude_zeros
+            'text_val': text, 'drafted_val': drafted, 'exclude_undrafted_val': exclude_undrafted, 'exclude_zeros_val': exclude_zeros
         })
     
     current_filters['sliders'] = slider_state
@@ -280,7 +280,7 @@ def update_controls(json_data, filters):
     filters = filters or {}
     
     defaults = {'x_val': 'VORP', 'y_val': 'Game Score', 'color_val': 'A/TO', 'size_val': 'PPM',
-                'name_val': [], 'pos_val': [], 'team_val': [], 'text_val': [], 'drafted_val': [], 'exclude_zeros_val': ['exclude']}
+                'name_val': [], 'pos_val': [], 'team_val': [], 'text_val': [], 'drafted_val': [], 'exclude_undrafted_val': [], 'exclude_zeros_val': ['exclude']}
     
     df = pd.read_json(StringIO(json_data), orient='split')
     numeric_cols = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
@@ -304,6 +304,7 @@ def update_controls(json_data, filters):
         dbc.Row([
             dbc.Col(dcc.Checklist(id='toggle-text-labels', options=[{'label': 'Toggle Text Labels', 'value': 'on'}], value=filters.get('text_val', defaults['text_val']), labelStyle={'display': 'inline-block'}), width={'size': 'auto'}),
             dbc.Col(dcc.Checklist(id='include-drafted-toggle', options=[{'label': 'Include Drafted', 'value': 'include'}], value=filters.get('drafted_val', defaults['drafted_val']), labelStyle={'display': 'inline-block'}), width={'size': 'auto'}),
+            dbc.Col(dcc.Checklist(id='exclude-undrafted-toggle', options=[{'label': 'Exclude Undrafted', 'value': 'exclude'}], value=filters.get('exclude_undrafted_val', defaults['exclude_undrafted_val']), labelStyle={'display': 'inline-block'}), width={'size': 'auto'}),
             dbc.Col(dcc.Checklist(id='exclude-zeros-toggle', options=[{'label': 'Exclude Zeros', 'value': 'exclude'}], value=filters.get('exclude_zeros_val', defaults['exclude_zeros_val']), labelStyle={'display': 'inline-block'}), width={'size': 'auto'}),
         ], className="mt-2", justify="center"),
     ]
@@ -410,6 +411,9 @@ def update_scatter_plot(json_data, filters):
 
     if 'include' not in filters.get('drafted_val', []):
         df = df[df['Draft Status'] == 'Available']
+    
+    if 'exclude' in filters.get('exclude_undrafted_val', []):
+        df = df[df['Draft Status'] == 'Drafted']
         
     x_col = filters.get('x_val', 'VORP')
     y_col = filters.get('y_val', 'Game Score')
