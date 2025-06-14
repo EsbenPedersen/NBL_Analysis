@@ -1,9 +1,10 @@
-import re
 import pandas as pd
+import numpy as np
+import re
+import logging
 from typing import Dict
 from src.advanced_stats import calculate_advanced_stats
 from fuzzywuzzy import process as fuzzy_process, fuzz
-import logging
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -15,23 +16,46 @@ def _get_best_match(target: str, candidates: list[str], score_cutoff: int = 80) 
     """
     from thefuzz import process
     
+    if not target or not candidates:
+        return None, 0
+    
     # First try exact match after standardization
     std_target = _standardize_name(target)
     for candidate in candidates:
         if _standardize_name(candidate) == std_target:
             return candidate, 100
             
-    # Then try partial matches
+    # Then try partial matches (substring matching)
     for candidate in candidates:
         std_candidate = _standardize_name(candidate)
         # Check if target is a subset of candidate or vice versa
         if std_target in std_candidate or std_candidate in std_target:
             return candidate, 95
             
-    # Finally try fuzzy matching
-    result = process.extractOne(target, candidates, score_cutoff=score_cutoff)
-    if result:
-        return result[0], result[1]
+    # Finally try fuzzy matching with different scorers
+    try:
+        # Try token_sort_ratio first (good for reordered words)
+        from thefuzz import fuzz
+        best_match = None
+        best_score = 0
+        
+        for candidate in candidates:
+            score = fuzz.token_sort_ratio(target, candidate)
+            if score > best_score and score >= score_cutoff:
+                best_match = candidate
+                best_score = score
+        
+        if best_match:
+            return best_match, best_score
+            
+        # If token_sort_ratio didn't work, try regular ratio
+        result = process.extractOne(target, candidates, score_cutoff=score_cutoff)
+        if result:
+            return result[0], result[1]
+            
+    except Exception as e:
+        logging.warning(f"Error in fuzzy matching for '{target}': {e}")
+    
     return None, 0
 
 def clean_up_stats_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -114,8 +138,12 @@ def _standardize_name(name: str) -> str:
     """
     if not name:
         return ""
+    # Remove punctuation and split on spaces
+    import string
+    # Remove all punctuation including commas
+    cleaned = ''.join(char for char in name if char not in string.punctuation)
     # Split on spaces and remove any empty parts
-    parts = [p.strip().lower() for p in name.split() if p.strip()]
+    parts = [p.strip().lower() for p in cleaned.split() if p.strip()]
     # Sort parts alphabetically
     parts.sort()
     return ''.join(parts)
@@ -143,6 +171,8 @@ def process_data(dataframes: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     master_player_list = master_player_list.rename(columns={'Player': 'Name'})
     master_player_list['name_key'] = master_player_list['Name'].apply(_standardize_name)
     canonical_keys = list(master_player_list['name_key'].unique())
+    
+    logging.info(f"Loaded {len(master_player_list)} players from snapshot sheets")
 
     # 2. Process Draft Sheet to get drafted players info
     draft_sheet_raw = dataframes.get('draft_Draft Sheet')
@@ -203,6 +233,13 @@ def process_data(dataframes: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         drafted_players_df['canonical_key'] = drafted_players_df['name_key'].apply(
             lambda x: _get_best_match(x, canonical_keys)[0]
         )
+        # Log any players that couldn't be matched
+        unmatched_drafted = drafted_players_df[drafted_players_df['canonical_key'].isna()]
+        if not unmatched_drafted.empty:
+            logging.warning(f"Could not match {len(unmatched_drafted)} drafted players:")
+            for _, player in unmatched_drafted.iterrows():
+                logging.warning(f"  - '{player['Original Name']}' (standardized: '{player['name_key']}')")
+        
     if not averages_df.empty:
         averages_df['canonical_key'] = averages_df['name_key'].apply(
             lambda x: _get_best_match(x, canonical_keys)[0]
