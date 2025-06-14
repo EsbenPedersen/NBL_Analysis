@@ -563,7 +563,7 @@ def update_scatter_plot(json_data, filters):
         trendline = None
     else:
         plot_df = df
-        hover_data=['Name', 'Position', 'Draft Status', 'Overall Rating']
+        hover_data=['Name', 'Position', 'Team', 'Draft Status', 'Overall Rating']
         text_labels = plot_df['Name'] if 'on' in filters.get('text_val', []) else None
         trendline = 'ols'
 
