@@ -12,8 +12,15 @@ from src.data_loader import get_google_sheets_data
 from src.data_processing import process_data
 from src.draft_optimizer import get_draft_recommendations
 
-# Initialize the Dash app
-app = dash.Dash(__name__, external_stylesheets=[dbc.themes.CYBORG], suppress_callback_exceptions=True)
+# Initialize the Dash app with viewport meta tag for responsive design
+app = dash.Dash(
+    __name__, 
+    external_stylesheets=[dbc.themes.CYBORG], 
+    suppress_callback_exceptions=True,
+    meta_tags=[
+        {"name": "viewport", "content": "width=device-width, initial-scale=1"}
+    ]
+)
 server = app.server
 load_figure_template("cyborg")
 
@@ -323,16 +330,16 @@ def update_controls(json_data, filters):
 
     return [
         dbc.Row([
-            dbc.Col(html.Div([html.Label("X-Axis:"), dcc.Dropdown(id='x-column', options=[{'label': col, 'value': col} for col in numeric_cols], value=filters.get('x_val', defaults['x_val']))]), width=3),
-            dbc.Col(html.Div([html.Label("Y-Axis:"), dcc.Dropdown(id='y-column', options=[{'label': col, 'value': col} for col in numeric_cols], value=filters.get('y_val', defaults['y_val']))]), width=3),
-            dbc.Col(html.Div([html.Label("Color By:"), dcc.Dropdown(id='color-column', options=all_cols_options, value=filters.get('color_val', defaults['color_val']), clearable=True)]), width=3),
-            dbc.Col(html.Div([html.Label("Size By:"), dcc.Dropdown(id='size-column', options=[{'label': col, 'value': col} for col in numeric_cols], value=filters.get('size_val', defaults['size_val']), clearable=True, placeholder="Select column for point size")]), width=3),
-        ], className="mb-3"),
+            dbc.Col(html.Div([html.Label("X-Axis:"), dcc.Dropdown(id='x-column', options=[{'label': col, 'value': col} for col in numeric_cols], value=filters.get('x_val', defaults['x_val']))]), width=12, md=6, lg=3),
+            dbc.Col(html.Div([html.Label("Y-Axis:"), dcc.Dropdown(id='y-column', options=[{'label': col, 'value': col} for col in numeric_cols], value=filters.get('y_val', defaults['y_val']))]), width=12, md=6, lg=3),
+            dbc.Col(html.Div([html.Label("Color By:"), dcc.Dropdown(id='color-column', options=all_cols_options, value=filters.get('color_val', defaults['color_val']), clearable=True)]), width=12, md=6, lg=3),
+            dbc.Col(html.Div([html.Label("Size By:"), dcc.Dropdown(id='size-column', options=[{'label': col, 'value': col} for col in numeric_cols], value=filters.get('size_val', defaults['size_val']), clearable=True, placeholder="Select column for point size")]), width=12, md=6, lg=3),
+        ], className="mb-3 g-2"), # g-2 for gutter space
         dbc.Row([
-            dbc.Col(html.Div([html.Label("Filter by Name(s):"), dcc.Dropdown(id='name-dropdown', options=name_options, value=filters.get('name_val', defaults['name_val']), multi=True, placeholder="Select player(s)")])),
-            dbc.Col(html.Div([html.Label("Filter by Position(s):"), dcc.Dropdown(id='position-dropdown', options=position_options, value=filters.get('pos_val', defaults['pos_val']), multi=True, placeholder="Select position(s)")])),
-            dbc.Col(html.Div([html.Label("Filter by Team(s):"), dcc.Dropdown(id='team-dropdown', options=team_options, value=filters.get('team_val', defaults['team_val']), multi=True, placeholder="Select team(s)")]))
-        ], className="mb-3"),
+            dbc.Col(html.Div([html.Label("Filter by Name(s):"), dcc.Dropdown(id='name-dropdown', options=name_options, value=filters.get('name_val', defaults['name_val']), multi=True, placeholder="Select player(s)")]), width=12, md=4),
+            dbc.Col(html.Div([html.Label("Filter by Position(s):"), dcc.Dropdown(id='position-dropdown', options=position_options, value=filters.get('pos_val', defaults['pos_val']), multi=True, placeholder="Select position(s)")]), width=12, md=4),
+            dbc.Col(html.Div([html.Label("Filter by Team(s):"), dcc.Dropdown(id='team-dropdown', options=team_options, value=filters.get('team_val', defaults['team_val']), multi=True, placeholder="Select team(s)")]), width=12, md=4)
+        ], className="mb-3 g-2"),
         dbc.Row([
             dbc.Col([
                 dcc.Checklist(
