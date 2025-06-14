@@ -144,16 +144,25 @@ app.layout = dbc.Container([
     # Player Filters (Collapsible)
     dbc.Card([
         dbc.CardHeader(
-            html.H2(
-                dbc.Button(
-                    "Player Filters",
-                    id="toggle-filters-btn",
-                    color="link",
-                    n_clicks=0,
-                    className="text-decoration-none"
+            dbc.Row([
+                dbc.Col(
+                    html.H2(
+                        dbc.Button(
+                            "Player Filters",
+                            id="toggle-filters-btn",
+                            color="link",
+                            n_clicks=0,
+                            className="text-decoration-none"
+                        ),
+                        className="mb-0"
+                    )
                 ),
-                className="mb-0"
-            )
+                dbc.Col(
+                    dbc.Button("Reset Player Filters", id="reset-sliders-btn", color="light", size="sm"),
+                    width="auto",
+                    className="align-self-center"
+                )
+            ], justify="between", align="center")
         ),
         dbc.Collapse(
             dbc.CardBody(html.Div(id='sliders-container')),
@@ -276,6 +285,22 @@ def update_filters_store(x, y, color, size, names, positions, teams, text, draft
 )
 def reset_filters_store(n_clicks):
     return {}
+
+@app.callback(
+    Output('filters-store', 'data', allow_duplicate=True),
+    [Input('reset-sliders-btn', 'n_clicks')],
+    [State('filters-store', 'data')],
+    prevent_initial_call=True
+)
+def reset_sliders(n_clicks, current_filters):
+    if not n_clicks:
+        return no_update
+    
+    current_filters = current_filters or {}
+    if 'sliders' in current_filters:
+        current_filters['sliders'] = {}
+        
+    return current_filters
 
 @app.callback(
     Output('controls-container', 'children'),
@@ -428,51 +453,42 @@ def update_sliders(json_data, filters):
     [Input({'type': 'min-input', 'index': dash.MATCH}, 'value'),
      Input({'type': 'max-input', 'index': dash.MATCH}, 'value'),
      Input({'type': 'filter-slider', 'index': dash.MATCH}, 'value')],
-    [State({'type': 'min-input', 'index': dash.MATCH}, 'id'),
-     State('data-store', 'data')],
+    [State({'type': 'filter-slider', 'index': dash.MATCH}, 'min'),
+     State({'type': 'filter-slider', 'index': dash.MATCH}, 'max')],
     prevent_initial_call=True
 )
-def sync_slider_inputs(min_input, max_input, slider_value, input_id, json_data):
-    """Synchronize slider and input values."""
-    if not json_data:
-        return dash.no_update, dash.no_update, dash.no_update
+def sync_slider_inputs(min_input_val, max_input_val, slider_range, slider_min, slider_max):
+    """
+    Synchronize the min/max input boxes with the range slider.
+    """
+    triggered_id = ctx.triggered_id
     
-    triggered = ctx.triggered_id
-    df = pd.read_json(StringIO(json_data), orient='split')
-    col = input_id['index']
+    # Set default values from the slider's full range
+    min_val, max_val = slider_min, slider_max
     
-    if col not in df.columns:
-        return dash.no_update, dash.no_update, dash.no_update
+    # Determine which component triggered the callback
+    if triggered_id.type == 'filter-slider':
+        min_val, max_val = slider_range
+    elif triggered_id.type == 'min-input':
+        min_val = float(min_input_val)
+        max_val = slider_range[1]
+    elif triggered_id.type == 'max-input':
+        min_val = slider_range[0]
+        max_val = float(max_input_val)
+
+    # Basic validation
+    if min_val > max_val:
+        min_val = max_val
+
+    # Ensure values are within the slider's allowed range
+    min_val = max(min_val, slider_min)
+    max_val = min(max_val, slider_max)
+
+    # Format for display
+    min_input_display = f"{min_val:.2f}"
+    max_input_display = f"{max_val:.2f}"
     
-    min_val = df[col].min()
-    max_val = df[col].max()
-    
-    if pd.isna(min_val) or pd.isna(max_val):
-        min_val, max_val = 0, 1
-    
-    if min_val == max_val:
-        max_val = min_val + 1
-    
-    # Convert inputs to floats, handling None/empty values
-    try:
-        min_input = float(min_input) if min_input is not None and min_input != '' else min_val
-        max_input = float(max_input) if max_input is not None and max_input != '' else max_val
-    except (ValueError, TypeError):
-        min_input = min_val
-        max_input = max_val
-    
-    # Ensure bounds are respected
-    min_input = max(min_val, min_input)
-    max_input = min(max_val, max_input)
-    
-    # Ensure min <= max
-    if min_input > max_input:
-        if triggered and triggered.get('type') == 'min-input':
-            max_input = min_input
-        else:
-            min_input = max_input
-    
-    return [min_input, max_input], f"{min_input:.2f}", f"{max_input:.2f}"
+    return [min_val, max_val], min_input_display, max_input_display
 
 @app.callback(
     Output('scatter-plot', 'figure'),
