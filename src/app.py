@@ -197,6 +197,7 @@ def update_data_store(n_intervals, n_clicks):
      Input('size-column', 'value'), Input('name-dropdown', 'value'), Input('position-dropdown', 'value'),
      Input('team-dropdown', 'value'), Input('toggle-text-labels', 'value'), Input('include-drafted-toggle', 'value'),
      Input('exclude-undrafted-toggle', 'value'), Input('exclude-zeros-toggle', 'value'),
+     Input('average-by-color-toggle', 'value'),
      Input({'type': 'filter-slider', 'index': dash.ALL}, 'value'),
      Input({'type': 'min-input', 'index': dash.ALL}, 'value'),
      Input({'type': 'max-input', 'index': dash.ALL}, 'value')],
@@ -206,7 +207,7 @@ def update_data_store(n_intervals, n_clicks):
      State('filters-store', 'data')],
     prevent_initial_call=True
 )
-def update_filters_store(x, y, color, size, names, positions, teams, text, drafted, exclude_undrafted, exclude_zeros,
+def update_filters_store(x, y, color, size, names, positions, teams, text, drafted, exclude_undrafted, exclude_zeros, avg_by_color,
                          slider_values, min_inputs, max_inputs,
                          slider_ids, min_input_ids, max_input_ids,
                          current_filters):
@@ -260,7 +261,8 @@ def update_filters_store(x, y, color, size, names, positions, teams, text, draft
         current_filters.update({
             'x_val': x, 'y_val': y, 'color_val': color, 'size_val': size,
             'name_val': names, 'pos_val': positions, 'team_val': teams,
-            'text_val': text, 'drafted_val': drafted, 'exclude_undrafted_val': exclude_undrafted, 'exclude_zeros_val': exclude_zeros
+            'text_val': text, 'drafted_val': drafted, 'exclude_undrafted_val': exclude_undrafted, 'exclude_zeros_val': exclude_zeros,
+            'avg_by_color_val': avg_by_color
         })
     
     current_filters['sliders'] = slider_state
@@ -284,7 +286,8 @@ def update_controls(json_data, filters):
     filters = filters or {}
     
     defaults = {'x_val': 'VORP', 'y_val': 'Game Score', 'color_val': 'A/TO', 'size_val': 'PPM',
-                'name_val': [], 'pos_val': [], 'team_val': [], 'text_val': [], 'drafted_val': [], 'exclude_undrafted_val': [], 'exclude_zeros_val': ['exclude']}
+                'name_val': [], 'pos_val': [], 'team_val': [], 'text_val': [], 'drafted_val': [], 'exclude_undrafted_val': [], 'exclude_zeros_val': ['exclude'],
+                'avg_by_color_val': []}
     
     df = pd.read_json(StringIO(json_data), orient='split')
     numeric_cols = [col for col in df.columns if pd.api.types.is_numeric_dtype(df[col])]
@@ -299,18 +302,51 @@ def update_controls(json_data, filters):
             dbc.Col(html.Div([html.Label("Y-Axis:"), dcc.Dropdown(id='y-column', options=[{'label': col, 'value': col} for col in numeric_cols], value=filters.get('y_val', defaults['y_val']))]), width=3),
             dbc.Col(html.Div([html.Label("Color By:"), dcc.Dropdown(id='color-column', options=all_cols_options, value=filters.get('color_val', defaults['color_val']), clearable=True)]), width=3),
             dbc.Col(html.Div([html.Label("Size By:"), dcc.Dropdown(id='size-column', options=[{'label': col, 'value': col} for col in numeric_cols], value=filters.get('size_val', defaults['size_val']), clearable=True, placeholder="Select column for point size")]), width=3),
-        ]),
+        ], className="mb-3"),
         dbc.Row([
-            dbc.Col(dcc.Dropdown(id='name-dropdown', options=name_options, value=filters.get('name_val', defaults['name_val']), multi=True, placeholder="Filter by Name(s)"), width=4),
-            dbc.Col(dcc.Dropdown(id='position-dropdown', options=position_options, value=filters.get('pos_val', defaults['pos_val']), multi=True, placeholder="Filter by Position(s)"), width=4),
-            dbc.Col(dcc.Dropdown(id='team-dropdown', options=team_options, value=filters.get('team_val', defaults['team_val']), multi=True, placeholder="Filter by Team(s)"), width=4),
-        ]),
+            dbc.Col(html.Div([html.Label("Filter by Name(s):"), dcc.Dropdown(id='name-dropdown', options=name_options, value=filters.get('name_val', defaults['name_val']), multi=True, placeholder="Select player(s)")])),
+            dbc.Col(html.Div([html.Label("Filter by Position(s):"), dcc.Dropdown(id='position-dropdown', options=position_options, value=filters.get('pos_val', defaults['pos_val']), multi=True, placeholder="Select position(s)")])),
+            dbc.Col(html.Div([html.Label("Filter by Team(s):"), dcc.Dropdown(id='team-dropdown', options=team_options, value=filters.get('team_val', defaults['team_val']), multi=True, placeholder="Select team(s)")]))
+        ], className="mb-3"),
         dbc.Row([
-            dbc.Col(dcc.Checklist(id='toggle-text-labels', options=[{'label': 'Toggle Text Labels', 'value': 'on'}], value=filters.get('text_val', defaults['text_val']), labelStyle={'display': 'inline-block'}), width={'size': 'auto'}),
-            dbc.Col(dcc.Checklist(id='include-drafted-toggle', options=[{'label': 'Include Drafted', 'value': 'include'}], value=filters.get('drafted_val', defaults['drafted_val']), labelStyle={'display': 'inline-block'}), width={'size': 'auto'}),
-            dbc.Col(dcc.Checklist(id='exclude-undrafted-toggle', options=[{'label': 'Exclude Undrafted', 'value': 'exclude'}], value=filters.get('exclude_undrafted_val', defaults['exclude_undrafted_val']), labelStyle={'display': 'inline-block'}), width={'size': 'auto'}),
-            dbc.Col(dcc.Checklist(id='exclude-zeros-toggle', options=[{'label': 'Exclude Zeros', 'value': 'exclude'}], value=filters.get('exclude_zeros_val', defaults['exclude_zeros_val']), labelStyle={'display': 'inline-block'}), width={'size': 'auto'}),
-        ], className="mt-2", justify="center"),
+            dbc.Col([
+                dcc.Checklist(
+                    id='toggle-text-labels',
+                    options=[{'label': 'Toggle Text Labels', 'value': 'on'}],
+                    value=filters.get('text_val', defaults['text_val']),
+                    inline=True,
+                    className="me-3"
+                ),
+                dcc.Checklist(
+                    id='include-drafted-toggle',
+                    options=[{'label': 'Include Drafted', 'value': 'include'}],
+                    value=filters.get('drafted_val', defaults['drafted_val']),
+                    inline=True,
+                    className="me-3"
+                ),
+                dcc.Checklist(
+                    id='exclude-undrafted-toggle',
+                    options=[{'label': 'Exclude Undrafted', 'value': 'exclude'}],
+                    value=filters.get('exclude_undrafted_val', defaults['exclude_undrafted_val']),
+                    inline=True,
+                    className="me-3"
+                ),
+                dcc.Checklist(
+                    id='exclude-zeros-toggle',
+                    options=[{'label': 'Exclude Zeros', 'value': 'exclude'}],
+                    value=filters.get('exclude_zeros_val', defaults['exclude_zeros_val']),
+                    inline=True,
+                    className="me-3"
+                ),
+                dcc.Checklist(
+                    id='average-by-color-toggle',
+                    options=[{'label': 'Average on Color By', 'value': 'average'}],
+                    value=filters.get('avg_by_color_val', defaults['avg_by_color_val']),
+                    inline=True,
+                    className="me-3"
+                )
+            ], className="d-flex flex-wrap")
+        ])
     ]
 
 @app.callback(
@@ -476,7 +512,9 @@ def update_scatter_plot(json_data, filters):
         
     x_col = filters.get('x_val', 'VORP')
     y_col = filters.get('y_val', 'Game Score')
-    
+    color_col = filters.get('color_val', 'Team')
+    size_col = filters.get('size_val')
+
     if 'exclude' in filters.get('exclude_zeros_val', []):
         if x_col in df.columns and y_col in df.columns:
             df = df[(df[x_col] != 0) & (df[y_col] != 0)]
@@ -484,23 +522,50 @@ def update_scatter_plot(json_data, filters):
     if df.empty:
         return px.scatter(title="No data to display with current filter settings")
 
+    # Check if aggregation is enabled
+    avg_by_color = 'average' in filters.get('avg_by_color_val', [])
+
+    if avg_by_color and color_col and color_col in df.columns:
+        agg_cols = {}
+        if x_col in df.columns and pd.api.types.is_numeric_dtype(df[x_col]):
+            agg_cols[x_col] = 'mean'
+        if y_col in df.columns and pd.api.types.is_numeric_dtype(df[y_col]):
+            agg_cols[y_col] = 'mean'
+        if size_col and size_col in df.columns and pd.api.types.is_numeric_dtype(df[size_col]):
+            agg_cols[size_col] = 'mean'
+        
+        # Also get the count of players per group
+        agg_cols['Name'] = 'count'
+
+        plot_df = df.groupby(color_col).agg(agg_cols).reset_index()
+        plot_df.rename(columns={'Name': 'Player Count'}, inplace=True)
+        
+        hover_data = [color_col, 'Player Count', x_col, y_col]
+        if size_col in plot_df.columns: hover_data.append(size_col)
+        
+        text_labels = plot_df[color_col]
+        trendline = None
+    else:
+        plot_df = df
+        hover_data=['Name', 'Position', 'Draft Status', 'Overall Rating']
+        text_labels = plot_df['Name'] if 'on' in filters.get('text_val', []) else None
+        trendline = 'ols'
+
     # Round all numeric columns for cleaner display in hover text and axes
-    numeric_cols_in_df = df.select_dtypes(include=np.number).columns
-    df[numeric_cols_in_df] = df[numeric_cols_in_df].round(3)
+    numeric_cols_in_df = plot_df.select_dtypes(include=np.number).columns
+    plot_df[numeric_cols_in_df] = plot_df[numeric_cols_in_df].round(3)
 
     # Preprocess size and text
-    size_col = filters.get('size_val')
-    size_data = preprocess_size_data(df[size_col]) if size_col and size_col in df.columns else None
-    text_labels = df['Name'] if 'on' in filters.get('text_val', []) else None
+    size_data = preprocess_size_data(plot_df[size_col]) if size_col and size_col in plot_df.columns else None
 
     # Create plot
     fig = px.scatter(
-        df, x=x_col, y=y_col,
-        color=filters.get('color_val'),
+        plot_df, x=x_col, y=y_col,
+        color=color_col,
         size=size_data,
         text=text_labels,
-        hover_data=['Name', 'Position', 'Draft Status', 'Overall Rating'],
-        trendline='ols',
+        hover_data=hover_data,
+        trendline=trendline,
     )
     fig.update_traces(textposition='top center', textfont_size=8)
     return fig
