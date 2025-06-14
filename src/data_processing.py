@@ -8,14 +8,31 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def _get_best_match(name_key: str, choices: list[str], score_cutoff: int = 90) -> tuple[str | None, int]:
-    """Finds the best fuzzy match for a key in a list of choices."""
-    if not name_key or not choices:
-        return None, 0
-    match, score = fuzzy_process.extractOne(name_key, choices, scorer=fuzz.token_sort_ratio)
-    if score >= score_cutoff:
-        return match, score
-    return None, score
+def _get_best_match(target: str, candidates: list[str], score_cutoff: int = 80) -> tuple[str | None, int]:
+    """
+    Gets the best fuzzy match for a target string from a list of candidates.
+    Returns a tuple of (best_match, score).
+    """
+    from thefuzz import process
+    
+    # First try exact match after standardization
+    std_target = _standardize_name(target)
+    for candidate in candidates:
+        if _standardize_name(candidate) == std_target:
+            return candidate, 100
+            
+    # Then try partial matches
+    for candidate in candidates:
+        std_candidate = _standardize_name(candidate)
+        # Check if target is a subset of candidate or vice versa
+        if std_target in std_candidate or std_candidate in std_target:
+            return candidate, 95
+            
+    # Finally try fuzzy matching
+    result = process.extractOne(target, candidates, score_cutoff=score_cutoff)
+    if result:
+        return result[0], result[1]
+    return None, 0
 
 def clean_up_stats_df(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -91,14 +108,17 @@ def clean_up_draft_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def _standardize_name(name: str) -> str:
-    """Standardizes a name by splitting it into parts, sorting them, and rejoining."""
-    if not isinstance(name, str):
-        return ''
-    # Find all sequences of word characters
-    parts = re.findall(r'\w+', name)
-    # Convert to lowercase, sort, and join
-    sorted_parts = sorted([part.lower() for part in parts if part])
-    return ''.join(sorted_parts)
+    """
+    Standardizes a name by sorting its parts alphabetically.
+    This helps match names regardless of order (e.g., "Wei Ren" matches "Ren Wei").
+    """
+    if not name:
+        return ""
+    # Split on spaces and remove any empty parts
+    parts = [p.strip().lower() for p in name.split() if p.strip()]
+    # Sort parts alphabetically
+    parts.sort()
+    return ''.join(parts)
 
 def process_data(dataframes: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     """
@@ -136,10 +156,10 @@ def process_data(dataframes: Dict[str, pd.DataFrame]) -> pd.DataFrame:
         for team_header in all_teams:
             gm_name = team_header.split('(')[0].strip()
             if gm_name:
-                first_name = gm_name.split()[0]
-                std_first_name = _standardize_name(first_name)
-                if std_first_name not in gm_map:
-                    gm_map[std_first_name] = team_header
+                # Use full GM name for standardization
+                std_gm_name = _standardize_name(gm_name)
+                if std_gm_name not in gm_map:
+                    gm_map[std_gm_name] = team_header
 
         melted_draft = draft_sheet.melt(id_vars="Round", var_name="OriginalTeam", value_name="CellText")
         melted_draft = melted_draft[melted_draft['CellText'].str.strip() != '']
@@ -153,11 +173,10 @@ def process_data(dataframes: Dict[str, pd.DataFrame]) -> pd.DataFrame:
                 target_gm_name, player_string = trade_match.group(1).strip(), trade_match.group(2).strip()
                 std_target_gm = _standardize_name(target_gm_name)
                 
+                # Try to find an exact match first
                 resolved_team = gm_map.get(std_target_gm)
-                if resolved_team:
-                    final_team = resolved_team
-                else:
-                    # Fallback to fuzzy matching on the GM first names
+                if not resolved_team:
+                    # Then try fuzzy matching
                     best_gm_match, score = _get_best_match(std_target_gm, list(gm_map.keys()), score_cutoff=85)
                     if best_gm_match:
                         final_team = gm_map[best_gm_match]
