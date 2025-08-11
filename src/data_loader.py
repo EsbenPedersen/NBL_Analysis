@@ -82,10 +82,16 @@ def get_regular_season_data() -> Dict[str, pd.DataFrame]:
 
     client = gspread.authorize(creds)
 
+    # Prefer a specific spreadsheet key if provided (more robust than title)
+    sheet_key = os.environ.get('REGULAR_SEASON_SHEET_KEY')
     try:
-        sh = client.open('Season 24 Table + Stats')
+        if sheet_key:
+            sh = client.open_by_key(sheet_key)
+        else:
+            sh = client.open('Season 24 Table + Stats')
     except gspread.SpreadsheetNotFound as exc:
-        raise RuntimeError("Regular season spreadsheet 'Season 24 Table + Stats' not found") from exc
+        # Return empty frames so app still runs; UI will show 'No data'
+        return {'standings': pd.DataFrame(), 'team_stats': pd.DataFrame(), 'player_stats': pd.DataFrame()}
 
     def _read_sheet(title: str) -> pd.DataFrame:
         try:

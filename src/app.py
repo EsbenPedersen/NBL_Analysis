@@ -680,14 +680,24 @@ def update_scatter_plot(json_data, filters):
     size_data = preprocess_size_data(plot_df[size_col]) if size_col and size_col in plot_df.columns else None
 
     # Create plot
-    fig = px.scatter(
-        plot_df, x=x_col, y=y_col,
-        color=color_col,
-        size=size_data,
-        text=text_labels,
-        hover_data=hover_data,
-        trendline=trendline,
-    )
+    # Create plot; if trendline backend (statsmodels/scipy) is unavailable in env, fallback without trendline
+    try:
+        fig = px.scatter(
+            plot_df, x=x_col, y=y_col,
+            color=color_col,
+            size=size_data,
+            text=text_labels,
+            hover_data=hover_data,
+            trendline=trendline,
+        )
+    except Exception:
+        fig = px.scatter(
+            plot_df, x=x_col, y=y_col,
+            color=color_col,
+            size=size_data,
+            text=text_labels,
+            hover_data=hover_data,
+        )
     fig.update_traces(textposition='top center', textfont_size=8)
     return fig
 
