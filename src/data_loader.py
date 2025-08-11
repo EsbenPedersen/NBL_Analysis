@@ -60,3 +60,81 @@ def get_google_sheets_data() -> Dict[str, pd.DataFrame]:
 if __name__ == "__main__":
     dataframes = get_google_sheets_data()
     print(dataframes)
+
+def get_regular_season_data() -> Dict[str, pd.DataFrame]:
+    """
+    Fetches Regular Season data from the Google Sheet 'Season 24 Table + Stats'.
+
+    Returns a dictionary with cleaned DataFrames for:
+    - 'standings': Team Standings
+    - 'team_stats': Team Statistics
+    - 'player_stats': Player Statistics
+    """
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+
+    creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
+
+    if creds_json_str:
+        creds_info = json.loads(creds_json_str)
+        creds = Credentials.from_service_account_info(creds_info, scopes=scope)
+    else:
+        creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
+
+    client = gspread.authorize(creds)
+
+    try:
+        sh = client.open('Season 24 Table + Stats')
+    except gspread.SpreadsheetNotFound as exc:
+        raise RuntimeError("Regular season spreadsheet 'Season 24 Table + Stats' not found") from exc
+
+    def _read_sheet(title: str) -> pd.DataFrame:
+        try:
+            ws = sh.worksheet(title)
+        except gspread.WorksheetNotFound:
+            return pd.DataFrame()
+        df = pd.DataFrame(ws.get_all_values())
+        if df.empty:
+            return df
+        # First row is header
+        df.columns = df.iloc[0].astype(str)
+        df = df.drop(index=0).reset_index(drop=True)
+        # Trim headers
+        df.columns = [c.strip() for c in df.columns]
+        return df
+
+    standings_df = _read_sheet('Team Standings')
+    team_stats_df = _read_sheet('Team Statistics')
+    player_stats_df = _read_sheet('Player Statistics')
+
+    # Clean numeric columns
+    def _coerce_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+        cleaned = df.copy()
+        for col in cleaned.columns:
+            # Skip obvious text columns
+            if col.lower() in {'abbreviation', 'team', 'general manager', 'name'}:
+                continue
+            # Remove % signs and commas and coerce
+            cleaned[col] = (
+                cleaned[col]
+                .astype(str)
+                .str.replace('%', '', regex=False)
+                .str.replace(',', '', regex=False)
+                .str.replace('#DIV/0!', '', regex=False)
+                .str.strip()
+            )
+            cleaned[col] = pd.to_numeric(cleaned[col], errors='coerce')
+        return cleaned
+
+    standings_df = _coerce_numeric_cols(standings_df)
+    team_stats_df = _coerce_numeric_cols(team_stats_df)
+
+    from src.data_processing import clean_up_stats_df  # reuse for player stats
+    player_stats_df = clean_up_stats_df(player_stats_df)
+
+    return {
+        'standings': standings_df,
+        'team_stats': team_stats_df,
+        'player_stats': player_stats_df,
+    }
