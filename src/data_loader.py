@@ -88,7 +88,9 @@ def get_regular_season_data() -> Dict[str, pd.DataFrame]:
         if sheet_key:
             sh = client.open_by_key(sheet_key)
         else:
-            sh = client.open('Season 24 Table + Stats')
+            # sh = client.open('Season 24 Table + Stats')
+            ## Temporarily use a copy of the sheet to avoid permissioning issues with the original sheet
+            sh = client.open('Season 24 Table + Stats COPY')
     except gspread.SpreadsheetNotFound as exc:
         # Return empty frames so app still runs; UI will show 'No data'
         return {'standings': pd.DataFrame(), 'team_stats': pd.DataFrame(), 'player_stats': pd.DataFrame()}
