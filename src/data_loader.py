@@ -319,13 +319,62 @@ def get_regular_season_data() -> Dict[str, pd.DataFrame]:
             return stats_df
 
     player_stats_df = _attach_positions(player_stats_df)
-    all_stats_df = _attach_positions(all_stats_df)
+
+    # Attach General Manager (and optionally Draft Team) to player_stats from Draft Sheet mapping
+    def _attach_gm_from_draft(stats_df: pd.DataFrame) -> pd.DataFrame:
+        if stats_df.empty or 'Name' not in stats_df.columns:
+            return stats_df
+        try:
+            from src.data_processing import clean_up_draft_df, _standardize_name  # type: ignore
+            draft_sh = client.open('Season 24 Draft')
+            try:
+                ws = draft_sh.worksheet('Draft Sheet')
+            except gspread.WorksheetNotFound:
+                # Fallback to first worksheet if named differently
+                ws = draft_sh.worksheets()[0]
+            raw = pd.DataFrame(ws.get_all_values())
+            if raw.empty:
+                return stats_df
+            draft_df = clean_up_draft_df(raw.copy())
+            team_headers = [c for c in draft_df.columns if c != 'Round']
+            melted = draft_df.melt(id_vars='Round', var_name='DraftTeamHeader', value_name='CellText')
+            melted = melted[melted['CellText'].astype(str).str.strip() != '']
+            # Extract player name and GM from header
+            def _extract_name(cell: str) -> str:
+                import re as _re
+                m = _re.match(r'^(.*?)\s*(?:\(\d+\))?$', str(cell).strip())
+                return m.group(1).strip() if m else str(cell).strip()
+            melted['Name'] = melted['CellText'].apply(_extract_name)
+            # GM is header before '(' if present
+            def _extract_gm(header: str) -> str:
+                header = str(header)
+                gm = header.split('(')[0].strip()
+                return gm if gm else header
+            melted['General Manager'] = melted['DraftTeamHeader'].apply(_extract_gm)
+            # Build mapping on standardized name
+            melted['name_key'] = melted['Name'].astype(str).apply(_standardize_name)
+            gm_map = (
+                melted.dropna(subset=['name_key'])
+                .drop_duplicates(subset=['name_key'])[['name_key', 'General Manager', 'DraftTeamHeader']]
+            )
+            stats_df = stats_df.copy()
+            stats_df['name_key'] = stats_df['Name'].astype(str).apply(_standardize_name)
+            merged = pd.merge(stats_df, gm_map, on='name_key', how='left')
+            merged.drop(columns=['name_key'], inplace=True, errors='ignore')
+            # If Team missing, as a last resort fill with DraftTeamHeader (not ideal, but avoids empty UI)
+            if 'Team' not in merged.columns and 'DraftTeamHeader' in merged.columns:
+                merged.rename(columns={'DraftTeamHeader': 'Team'}, inplace=True)
+            return merged
+        except Exception as exc:
+            logging.warning("Failed to map GM from Draft Sheet: %s", exc)
+            return stats_df
+
+    player_stats_df = _attach_gm_from_draft(player_stats_df)
 
     result = {
         'standings': standings_df,
         'team_stats': team_stats_df,
         'player_stats': player_stats_df,
-        'all_stats': all_stats_df,
     }
     # Final shapes log
     for key, frame in result.items():

@@ -94,6 +94,17 @@ layout = html.Div([
             ])
         ]), md=6),
     ], className="mb-4"),
+
+    dbc.Card([
+        dbc.CardHeader(html.H3("Trade Targets")),
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col(dcc.Dropdown(id='rs-team-select', placeholder='Select Team'), md=6),
+                dbc.Col(dbc.Input(id='rs-trade-topn', type='number', value=3, min=1, max=10, step=1, placeholder='Top N per Position'), md=3),
+            ], className='mb-3 g-2'),
+            html.Div(id='rs-trade-table')
+        ])
+    ], className="mb-4"),
 ])
 
 
@@ -202,6 +213,108 @@ def rs_fill_dropdowns(json_payload: Optional[Dict[str, str]]) -> Tuple[List[Dict
         return [{'label': c, 'value': c} for c in df.columns]
 
     return opts(team_stats), opts(team_stats), opts(team_stats), opts(team_stats), opts(player_stats), opts(player_stats), opts(player_stats), opts(player_stats)
+
+
+@dash.callback(
+    Output('rs-team-select', 'options'),
+    Input('rs-data-store', 'data')
+)
+def rs_team_select_options(json_payload: Optional[Dict[str, str]]) -> List[Dict[str, str]]:
+    if not json_payload:
+        return []
+    standings = pd.read_json(StringIO(json_payload['standings']), orient='split') if 'standings' in json_payload else pd.DataFrame()
+    if standings.empty:
+        return []
+    label_col = 'Team' if 'Team' in standings.columns else standings.columns[0]
+    return [{'label': t, 'value': t} for t in sorted(standings[label_col].dropna().unique())]
+
+
+@dash.callback(
+    Output('rs-trade-table', 'children'),
+    [Input('rs-team-select', 'value'), Input('rs-trade-topn', 'value'), Input('rs-data-store', 'data')]
+)
+def rs_trade_suggestions(team_name: Optional[str], topn: Optional[int], json_payload: Optional[Dict[str, str]]):
+    if not json_payload or not team_name:
+        return "Select a team to see trade targets"
+    team_stats = pd.read_json(StringIO(json_payload['team_stats']), orient='split') if 'team_stats' in json_payload else pd.DataFrame()
+    player_stats = pd.read_json(StringIO(json_payload['player_stats']), orient='split') if 'player_stats' in json_payload else pd.DataFrame()
+    if team_stats.empty or player_stats.empty:
+        return "No data"
+
+    # Identify team abbreviation if available
+    # Determine the team key for player_stats robustly
+    if 'Team' in player_stats.columns:
+        team_key = 'Team'
+    elif 'Abbreviation' in player_stats.columns:
+        team_key = 'Abbreviation'
+    else:
+        # Try to infer common variants
+        candidates = [c for c in player_stats.columns if c.lower() in {'team', 'abbreviation', 'abbr', 'tm'}]
+        team_key = candidates[0] if candidates else None
+    if not team_key:
+        return "Player stats missing team identifier column"
+    opp_key = team_key
+    abbr_col = 'Abbreviation' if 'Abbreviation' in team_stats.columns else None
+    gm_col = 'General Manager' if 'General Manager' in team_stats.columns else None
+    selected = team_stats[team_stats[team_key] == team_name]
+    if selected.empty and abbr_col:
+        # try matching against abbreviation
+        selected = team_stats[team_stats[abbr_col] == team_name]
+        team_key = abbr_col or team_key
+    if selected.empty:
+        return "Team not found"
+
+    # Derive weaknesses: use VORP as player strength metric; aggregate by position for selected team
+    pos_col = 'Position' if 'Position' in player_stats.columns else None
+    if not pos_col:
+        return "Position data unavailable; cannot compute trade targets"
+    topn = int(topn or 3)
+
+    # Players on selected team
+    players_on_team = player_stats[player_stats[team_key] == team_name]
+    if players_on_team.empty and abbr_col and abbr_col in selected.columns:
+        players_on_team = player_stats[player_stats[team_key] == selected.iloc[0][abbr_col]]
+
+    # Compute current team strength per position (median VORP)
+    team_pos_strength = players_on_team.groupby(pos_col)['VORP'].median().rename('team_pos_vorp') if 'VORP' in players_on_team.columns else pd.Series(dtype=float)
+
+    # Candidate pool: players not on selected team
+    candidates = player_stats[player_stats[opp_key] != team_name]
+    if abbr_col and not candidates.empty:
+        candidates = candidates[candidates[opp_key] != selected.iloc[0][abbr_col]] if abbr_col in selected.columns else candidates
+
+    # For each position, compute gap vs top available players by VORP
+    results: List[pd.DataFrame] = []
+    for pos, grp in candidates.groupby(pos_col):
+        if 'VORP' not in grp.columns or grp.empty:
+            continue
+        top_avail = grp.sort_values('VORP', ascending=False).head(topn)
+        current_vorp = float(team_pos_strength.get(pos, 0.0)) if not team_pos_strength.empty else 0.0
+        top_avail = top_avail.assign(
+            Position=pos,
+            CurrentTeamStrength=current_vorp,
+            UpgradeDelta=(top_avail['VORP'] - current_vorp).round(2)
+        )
+        results.append(top_avail[['Position', 'Name', 'Team', 'VORP', 'UpgradeDelta']])
+
+    if not results:
+        return "No candidates found"
+    out = pd.concat(results, ignore_index=True)
+    out = out.sort_values(['UpgradeDelta', 'VORP'], ascending=[False, False]).reset_index(drop=True)
+
+    styles: List[Dict[str, object]] = []
+    for hcol in ['VORP', 'UpgradeDelta']:
+        if hcol in out.columns:
+            styles.extend(generate_heatmap_style(out, hcol))
+
+    return dash_table.DataTable(
+        data=out.to_dict('records'),
+        columns=[{"name": c, "id": c} for c in out.columns],
+        style_header={'backgroundColor': 'rgb(30, 30, 30)', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'},
+        style_cell={'textAlign': 'center', 'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white', 'border': '1px solid rgb(80, 80, 80)'},
+        style_data_conditional=styles,
+        page_size=20,
+    )
 
 
 @dash.callback(
@@ -317,6 +430,9 @@ def rs_top_players(json_payload: Optional[Dict[str, str]]):
     df = pd.read_json(StringIO(json_payload['player_stats']), orient='split') if 'player_stats' in json_payload else pd.DataFrame()
     if df.empty:
         return "No data"
+    # Ensure Team column exists by mirroring from Abbreviation when that is the only identifier
+    if 'Team' not in df.columns and 'Abbreviation' in df.columns:
+        df = df.rename(columns={'Abbreviation': 'Team'})
     pos_col = 'Position' if 'Position' in df.columns else None
     if not pos_col:
         # Fallback: show overall top 5 with VORP/Plus Minus if available
