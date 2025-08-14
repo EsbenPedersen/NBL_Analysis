@@ -192,6 +192,14 @@ def rs_render_overview(json_payload: Optional[Dict[str, str]]) -> Tuple[Any, Any
     else:
         standings_df = standings
 
+    # Round win Percentage to 2 decimals if present
+    if 'Percentage' in standings_df.columns:
+        try:
+            standings_df = standings_df.copy()
+            standings_df['Percentage'] = pd.to_numeric(standings_df['Percentage'], errors='coerce').round(2)
+        except Exception:
+            pass
+
     return _table(standings_df), _table(power_df)
 
 
@@ -227,6 +235,17 @@ def rs_team_select_options(json_payload: Optional[Dict[str, str]]) -> List[Dict[
         return []
     label_col = 'Team' if 'Team' in standings.columns else standings.columns[0]
     return [{'label': t, 'value': t} for t in sorted(standings[label_col].dropna().unique())]
+
+
+@dash.callback(
+    Output('rs-team-select', 'value'),
+    Input('rs-team-select', 'options')
+)
+def rs_team_select_default(options: Optional[List[Dict[str, str]]]) -> Optional[str]:
+    if not options:
+        return None
+    values = {opt.get('value') for opt in options}
+    return 'Net Profits' if 'Net Profits' in values else None
 
 
 @dash.callback(
@@ -295,7 +314,7 @@ def rs_trade_suggestions(team_name: Optional[str], topn: Optional[int], json_pay
             CurrentTeamStrength=current_vorp,
             UpgradeDelta=(top_avail['VORP'] - current_vorp).round(2)
         )
-        results.append(top_avail[['Position', 'Name', 'Team', 'VORP', 'UpgradeDelta']])
+        results.append(top_avail[['Position', 'Name', 'VORP', 'UpgradeDelta']])
 
     if not results:
         return "No candidates found"
@@ -443,11 +462,16 @@ def rs_top_players(json_payload: Optional[Dict[str, str]]):
         if not sort_by:
             return "No numeric columns to rank"
         top_overall = df.sort_values(sort_by, ascending=False).head(5)
-        show_cols = [c for c in ['Name', 'Team', 'VORP', 'Plus Minus'] if c in top_overall.columns]
-        return dash_table.DataTable(data=top_overall[show_cols].to_dict('records'), columns=[{"name": c, "id": c} for c in show_cols])
+        show_cols = [c for c in ['Name', 'VORP', 'Plus Minus'] if c in top_overall.columns]
+        return dash_table.DataTable(
+            data=top_overall[show_cols].to_dict('records'),
+            columns=[{"name": c, "id": c} for c in show_cols],
+            style_header={'backgroundColor': 'rgb(30, 30, 30)', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center', 'fontSize': '12px', 'padding': '4px 6px'},
+            style_cell={'textAlign': 'center', 'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white', 'border': '1px solid rgb(80, 80, 80)', 'fontSize': '12px', 'padding': '4px 6px'}
+        )
 
     positions = ['PG', 'SG', 'SF', 'PF', 'C']
-    tables: List[Any] = []
+    cols: List[Any] = []
     for pos in positions:
         pos_df = df[df[pos_col] == pos].copy()
         if pos_df.empty:
@@ -460,8 +484,8 @@ def rs_top_players(json_payload: Optional[Dict[str, str]]):
         if not sort_by:
             continue
         top_pos = pos_df.sort_values(sort_by, ascending=False).head(5)
-        # Columns to display: Name, Team, VORP, Plus Minus (subset to available)
-        show_cols = [c for c in ['Name', 'Team', 'VORP', 'Plus Minus'] if c in top_pos.columns]
+        # Columns to display: Name, VORP, Plus Minus (subset to available)
+        show_cols = [c for c in ['Name', 'VORP', 'Plus Minus'] if c in top_pos.columns]
         # Optional rounding for readability
         for col in ['VORP', 'Plus Minus']:
             if col in top_pos.columns:
@@ -477,15 +501,15 @@ def rs_top_players(json_payload: Optional[Dict[str, str]]):
             dash_table.DataTable(
                 data=top_pos[show_cols].to_dict('records'),
                 columns=[{"name": c, "id": c} for c in show_cols],
-                style_header={'backgroundColor': 'rgb(30, 30, 30)', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'},
-                style_cell={'textAlign': 'center', 'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white', 'border': '1px solid rgb(80, 80, 80)'},
+                style_header={'backgroundColor': 'rgb(30, 30, 30)', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center', 'fontSize': '12px', 'padding': '4px 6px'},
+                style_cell={'textAlign': 'center', 'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white', 'border': '1px solid rgb(80, 80, 80)', 'fontSize': '12px', 'padding': '4px 6px'},
                 style_data_conditional=styles,
             )
-        ], className="mb-3")
-        tables.append(table)
+        ])
+        cols.append(dbc.Col(table, xs=12, sm=6, md=4, lg=2))
 
-    if not tables:
+    if not cols:
         return "No data"
-    return tables
+    return dbc.Row(cols, className="g-2")
 
 
