@@ -88,7 +88,7 @@ def get_regular_season_data() -> Dict[str, pd.DataFrame]:
     # Open by title; prefer the COPY placeholder to avoid permission issues
     try:
         try:
-            sh = client.open('Season 24 Table + Stats COPY')
+            sh = client.open('Copy of Season 24 Table + Stats')
         except gspread.SpreadsheetNotFound:
             sh = client.open('Season 24 Table + Stats')
     except gspread.SpreadsheetNotFound:
