@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.data_loader import get_regular_season_data
 from src.ui_helpers import generate_heatmap_style, preprocess_size_data
+import logging
 
 
 dash.register_page(__name__, path="/regular", name="Regular Season")
@@ -71,9 +72,17 @@ layout = html.Div([
     [Input('rs-interval', 'n_intervals'), Input('rs-refresh-btn', 'n_clicks')]
 )
 def rs_update_data_store(n_intervals: int, n_clicks: Optional[int]) -> Dict[str, str]:
-    data = get_regular_season_data()
-    payload = {k: v.to_json(date_format='iso', orient='split') for k, v in data.items()}
-    return payload
+    try:
+        data = get_regular_season_data()
+        payload = {k: v.to_json(date_format='iso', orient='split') for k, v in data.items()}
+        logging.info("Regular season data fetched: standings=%s, team_stats=%s, player_stats=%s",
+                     data.get('standings', pd.DataFrame()).shape,
+                     data.get('team_stats', pd.DataFrame()).shape,
+                     data.get('player_stats', pd.DataFrame()).shape)
+        return payload
+    except Exception:
+        logging.warning("Regular season data fetch failed; returning empty payload", exc_info=True)
+        return {}
 
 
 @dash.callback(

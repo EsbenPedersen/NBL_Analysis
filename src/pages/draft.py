@@ -10,6 +10,7 @@ from src.data_loader import get_google_sheets_data
 from src.data_processing import process_data
 from src.draft_optimizer import get_draft_recommendations
 from src.ui_helpers import generate_heatmap_style, preprocess_size_data
+import logging
 
 
 dash.register_page(__name__, path="/", name="Draft")
@@ -101,6 +102,7 @@ def toggle_filters_collapse(n: Optional[int], is_open: Optional[bool]) -> Option
 def update_data_store(n_intervals: int, n_clicks: Optional[int]) -> str:
     try:
         raw_data = get_google_sheets_data()
+        logging.info("Draft sheets fetched %d tabs", len(raw_data))
         processed_data = process_data(raw_data)
         for col in processed_data.columns:
             if pd.api.types.is_numeric_dtype(processed_data[col]):
@@ -108,6 +110,7 @@ def update_data_store(n_intervals: int, n_clicks: Optional[int]) -> str:
         return processed_data.to_json(date_format='iso', orient='split')
     except Exception:
         # Gracefully handle missing credentials or network issues
+        logging.warning("Draft data fetch failed; returning empty payload", exc_info=True)
         return ""
 
 
