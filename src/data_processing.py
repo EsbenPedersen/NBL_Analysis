@@ -2,14 +2,14 @@ import pandas as pd
 import numpy as np
 import re
 import logging
-from typing import Dict
+from typing import Dict, Optional, Tuple, List
 from src.advanced_stats import calculate_advanced_stats
 from fuzzywuzzy import process as fuzzy_process, fuzz
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def _get_best_match(target: str, candidates: list[str], score_cutoff: int = 80) -> tuple[str | None, int]:
+def _get_best_match(target: str, candidates: List[str], score_cutoff: int = 80) -> Tuple[Optional[str], int]:
     """
     Gets the best fuzzy match for a target string from a list of candidates.
     Returns a tuple of (best_match, score).
