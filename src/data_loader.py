@@ -7,6 +7,13 @@ import logging
 import os
 import json
 import re
+import time
+
+_DRAFT_CACHE: Dict[str, object] = {"data": None, "ts": 0.0}
+_REGULAR_CACHE: Dict[str, object] = {"data": None, "ts": 0.0}
+_DRAFT_TTL_SECONDS: int = int(os.environ.get("DRAFT_SHEETS_TTL_SECONDS", "300"))
+_REGULAR_TTL_SECONDS: int = int(os.environ.get("REGULAR_SHEETS_TTL_SECONDS", "300"))
+
 
 def get_google_sheets_data() -> Dict[str, pd.DataFrame]:
     """
@@ -20,6 +27,13 @@ def get_google_sheets_data() -> Dict[str, pd.DataFrame]:
         dict: A dictionary of pandas DataFrames, where each key is a sheet name.
     """
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+
+    # Serve from cache if fresh
+    now = time.time()
+    cached = _DRAFT_CACHE.get("data")
+    if cached is not None and (now - float(_DRAFT_CACHE.get("ts", 0.0))) < _DRAFT_TTL_SECONDS:
+        logging.info("Using cached draft sheets (age %.1fs)", now - float(_DRAFT_CACHE.get("ts", 0.0)))
+        return cached  # type: ignore[return-value]
     
     creds_json_str = os.environ.get('GOOGLE_CREDENTIALS_JSON')
     
@@ -33,31 +47,43 @@ def get_google_sheets_data() -> Dict[str, pd.DataFrame]:
         
     client = gspread.authorize(creds)
 
-    # Fetch data from "Season 24 Draft"
-    draft_sh = client.open('Season 24 Draft')
-    dataframes = {}
-    for sheet in draft_sh.worksheets():
-        dataframes[f"draft_{sheet.title}"] = pd.DataFrame(sheet.get_all_values())
-
-    # Fetch data from "Season 24 Draft - Snapshot"
     try:
-        snapshot_sh = client.open('Season 24 Draft - Snapshot')
-        for sheet in snapshot_sh.worksheets():
-            # Storing with a 'snapshot_' prefix to distinguish them
-            dataframes[f"snapshot_{sheet.title}"] = pd.DataFrame(sheet.get_all_values())
-    except gspread.SpreadsheetNotFound:
-        print("Warning: 'Season 24 Draft - Snapshot' not found. Proceeding without it.")
+        # Fetch data from "Season 24 Draft"
+        draft_sh = client.open('Season 24 Draft')
+        dataframes: Dict[str, pd.DataFrame] = {}
+        for sheet in draft_sh.worksheets():
+            dataframes[f"draft_{sheet.title}"] = pd.DataFrame(sheet.get_all_values())
 
-    # Fetch data from "Showcase Stats", only the "Averages" tab
-    stats_sh = client.open('Showcase Stats')
-    try:
-        worksheet = stats_sh.worksheet('Averages')
-        dataframes['stats_Averages'] = pd.DataFrame(worksheet.get_all_values())
-    except gspread.WorksheetNotFound:
-        # If "Averages" sheet is not found, create an empty DataFrame
-        dataframes['stats_Averages'] = pd.DataFrame()
+        # Fetch data from "Season 24 Draft - Snapshot"
+        try:
+            snapshot_sh = client.open('Season 24 Draft - Snapshot')
+            for sheet in snapshot_sh.worksheets():
+                dataframes[f"snapshot_{sheet.title}"] = pd.DataFrame(sheet.get_all_values())
+        except gspread.SpreadsheetNotFound:
+            logging.info("'Season 24 Draft - Snapshot' not found. Proceeding without it.")
 
-    return dataframes 
+        # Fetch data from "Showcase Stats", only the "Averages" tab
+        try:
+            stats_sh = client.open('Showcase Stats')
+            try:
+                worksheet = stats_sh.worksheet('Averages')
+                dataframes['stats_Averages'] = pd.DataFrame(worksheet.get_all_values())
+            except gspread.WorksheetNotFound:
+                dataframes['stats_Averages'] = pd.DataFrame()
+        except gspread.SpreadsheetNotFound:
+            logging.info("'Showcase Stats' spreadsheet not found. Proceeding without it.")
+
+        _DRAFT_CACHE["data"] = dataframes
+        _DRAFT_CACHE["ts"] = now
+        logging.info("Draft sheets fetched and cached (%d tabs)", len(dataframes))
+        return dataframes
+    except Exception as exc:
+        # Fallback to cache on rate limiting or transient errors
+        cached = _DRAFT_CACHE.get("data")
+        if cached is not None:
+            logging.warning("Draft fetch failed (%s). Serving cached data.", exc)
+            return cached  # type: ignore[return-value]
+        raise
 
 if __name__ == "__main__":
     dataframes = get_google_sheets_data()
@@ -84,6 +110,13 @@ def get_regular_season_data() -> Dict[str, pd.DataFrame]:
         creds = Credentials.from_service_account_info(creds_info, scopes=scope)
     else:
         creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
+
+    # Serve from cache if fresh
+    now = time.time()
+    cached = _REGULAR_CACHE.get("data")
+    if cached is not None and (now - float(_REGULAR_CACHE.get("ts", 0.0))) < _REGULAR_TTL_SECONDS:
+        logging.info("Using cached regular season sheets (age %.1fs)", now - float(_REGULAR_CACHE.get("ts", 0.0)))
+        return cached  # type: ignore[return-value]
 
     client = gspread.authorize(creds)
 
@@ -254,4 +287,6 @@ def get_regular_season_data() -> Dict[str, pd.DataFrame]:
             logging.info("regular.%s final shape: %s", key, getattr(frame, 'shape', None))
         except Exception:
             pass
+    _REGULAR_CACHE["data"] = result
+    _REGULAR_CACHE["ts"] = now
     return result

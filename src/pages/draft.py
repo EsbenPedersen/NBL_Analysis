@@ -19,7 +19,7 @@ dash.register_page(__name__, path="/", name="Draft")
 layout = html.Div([
     dcc.Store(id='data-store'),
     dcc.Store(id='filters-store', data={}),
-    dcc.Interval(id='interval-component', interval=60 * 1000, n_intervals=0),
+    dcc.Interval(id='interval-component', interval=5 * 60 * 1000, n_intervals=0),
 
     dbc.Row([
         dbc.Col(html.H1("NBL Draft Analysis"), width='auto'),
