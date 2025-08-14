@@ -231,6 +231,7 @@ def get_regular_season_data() -> Dict[str, pd.DataFrame]:
     standings_df = _read_sheet('Team Standings')
     team_stats_df = _read_sheet('Team Statistics')
     player_stats_df = _read_sheet('Player Statistics')
+    all_stats_df = _read_sheet('All Stats')
 
     # Clean numeric columns
     def _coerce_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
@@ -276,10 +277,55 @@ def get_regular_season_data() -> Dict[str, pd.DataFrame]:
     from src.data_processing import clean_up_stats_df  # reuse for player stats
     player_stats_df = clean_up_stats_df(player_stats_df)
 
+    # If Position is missing from player or all stats, try to map from Draft Snapshot sheets
+    def _attach_positions(stats_df: pd.DataFrame) -> pd.DataFrame:
+        if stats_df.empty or 'Name' not in stats_df.columns or 'Position' in stats_df.columns:
+            return stats_df
+        try:
+            # Build mapping from Season 24 Draft - Snapshot (PG, SG, SF, PF, C)
+            from src.data_processing import clean_up_available_players_df, _standardize_name  # type: ignore
+            try:
+                snapshot_sh = client.open('Season 24 Draft - Snapshot')
+            except gspread.SpreadsheetNotFound:
+                logging.info("'Season 24 Draft - Snapshot' not available for position mapping")
+                return stats_df
+            position_rows: List[pd.DataFrame] = []
+            for pos_tab, pos in [('PG', 'PG'), ('SG', 'SG'), ('SF', 'SF'), ('PF', 'PF'), ('C', 'C')]:
+                try:
+                    ws = snapshot_sh.worksheet(pos_tab)
+                    raw = pd.DataFrame(ws.get_all_values())
+                    if raw.empty:
+                        continue
+                    cleaned = clean_up_available_players_df(raw.copy())
+                    if cleaned.empty or 'Player' not in cleaned.columns:
+                        continue
+                    df_pos = cleaned[['Player']].rename(columns={'Player': 'Name'})
+                    df_pos['Position'] = pos
+                    position_rows.append(df_pos)
+                except gspread.WorksheetNotFound:
+                    continue
+            if not position_rows:
+                return stats_df
+            positions_df = pd.concat(position_rows, ignore_index=True)
+            # Standardized key merge to handle 'Last, First' vs 'First Last'
+            stats_df = stats_df.copy()
+            positions_df['name_key'] = positions_df['Name'].astype(str).apply(_standardize_name)
+            stats_df['name_key'] = stats_df['Name'].astype(str).apply(_standardize_name)
+            merged = pd.merge(stats_df, positions_df[['name_key', 'Position']], on='name_key', how='left')
+            merged.drop(columns=['name_key'], inplace=True, errors='ignore')
+            return merged
+        except Exception as exc:
+            logging.warning("Failed to map positions from snapshot: %s", exc)
+            return stats_df
+
+    player_stats_df = _attach_positions(player_stats_df)
+    all_stats_df = _attach_positions(all_stats_df)
+
     result = {
         'standings': standings_df,
         'team_stats': team_stats_df,
         'player_stats': player_stats_df,
+        'all_stats': all_stats_df,
     }
     # Final shapes log
     for key, frame in result.items():

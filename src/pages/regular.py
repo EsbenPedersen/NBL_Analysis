@@ -13,6 +13,14 @@ import logging
 
 dash.register_page(__name__, path="/regular", name="Regular Season")
 
+STANDINGS_DISPLAY_COLUMNS: List[str] = [
+    'Team', 'General Manager', 'Wins', 'Losses', 'Percentage',
+]
+
+POWER_DISPLAY_COLUMNS: List[str] = [
+    'Team', 'General Manager', 'Power Rank', 'Power Score', 'Point Differential', 'Net Rating'
+]
+
 
 layout = html.Div([
     dcc.Store(id='rs-data-store'),
@@ -48,7 +56,18 @@ layout = html.Div([
                     dbc.Col(dcc.Dropdown(id='rs-team-color', placeholder='Color By', clearable=True), md=3),
                     dbc.Col(dcc.Dropdown(id='rs-team-size', placeholder='Size By', clearable=True), md=3),
                 ], className='mb-2 g-2'),
-                dcc.Graph(id='rs-team-graph', style={'height': '50vh'})
+                dbc.Row([
+                    dbc.Col(
+                        dcc.Checklist(
+                            id='rs-team-text-toggle',
+                            options=[{'label': 'Show GM Labels', 'value': 'on'}],
+                            value=['on'],
+                            inline=True,
+                        ),
+                        md=12
+                    )
+                ], className='mb-2'),
+                dcc.Graph(id='rs-team-graph', style={'height': '50vh', 'width': '100%'}, config={'responsive': True})
             ])
         ]), md=6),
         dbc.Col(dbc.Card([
@@ -60,7 +79,18 @@ layout = html.Div([
                     dbc.Col(dcc.Dropdown(id='rs-player-color', placeholder='Color By', clearable=True), md=3),
                     dbc.Col(dcc.Dropdown(id='rs-player-size', placeholder='Size By', clearable=True), md=3),
                 ], className='mb-2 g-2'),
-                dcc.Graph(id='rs-player-graph', style={'height': '50vh'})
+                dbc.Row([
+                    dbc.Col(
+                        dcc.Checklist(
+                            id='rs-player-text-toggle',
+                            options=[{'label': 'Show Name Labels', 'value': 'on'}],
+                            value=[],
+                            inline=True,
+                        ),
+                        md=12
+                    )
+                ], className='mb-2'),
+                dcc.Graph(id='rs-player-graph', style={'height': '50vh', 'width': '100%'}, config={'responsive': True})
             ])
         ]), md=6),
     ], className="mb-4"),
@@ -135,14 +165,23 @@ def rs_render_overview(json_payload: Optional[Dict[str, str]]) -> Tuple[Any, Any
             score = score + merged[pdiff_col].fillna(0) * 2.0
         if nr_col and nr_col in merged.columns:
             score = score + merged[nr_col].fillna(0) * 3.0
-        merged['Power Score'] = score
+        merged['Power Score'] = score.round(2)
         merged = merged.sort_values('Power Score', ascending=False)
         rank_col = 'Power Rank'
         merged[rank_col] = range(1, len(merged) + 1)
-        display_cols = [rank_col, 'Power Score'] + [c for c in merged.columns if c not in {rank_col, 'Power Score'}]
+        default_cols = [rank_col, 'Power Score'] + [c for c in merged.columns if c not in {rank_col, 'Power Score'}]
+        desired = [c for c in POWER_DISPLAY_COLUMNS if c in merged.columns]
+        display_cols = desired if desired else default_cols
         power_df = merged[display_cols]
 
-    return _table(standings), _table(power_df)
+    # Trim standings columns for display using configured list, with fallback to all columns
+    if not standings.empty:
+        standings_cols = [c for c in STANDINGS_DISPLAY_COLUMNS if c in standings.columns]
+        standings_df = standings[standings_cols] if standings_cols else standings
+    else:
+        standings_df = standings
+
+    return _table(standings_df), _table(power_df)
 
 
 @dash.callback(
@@ -166,6 +205,40 @@ def rs_fill_dropdowns(json_payload: Optional[Dict[str, str]]) -> Tuple[List[Dict
 
 
 @dash.callback(
+    [Output('rs-team-x', 'value'), Output('rs-team-y', 'value'), Output('rs-team-color', 'value'), Output('rs-team-size', 'value')],
+    [Input('rs-team-x', 'options'), Input('rs-team-y', 'options'), Input('rs-team-color', 'options'), Input('rs-team-size', 'options')],
+)
+def rs_set_team_defaults(x_opts, y_opts, color_opts, size_opts):
+    x_default = 'Point Differential'
+    y_default = 'Net Rating'
+    color_default = 'General Manager'
+    size_default = 'Points Per Possession'
+    def pick(opts, want):
+        if not opts:
+            return None
+        values = {o['value'] for o in opts}
+        return want if want in values else None
+    return pick(x_opts, x_default), pick(y_opts, y_default), pick(color_opts, color_default), pick(size_opts, size_default)
+
+
+@dash.callback(
+    [Output('rs-player-x', 'value'), Output('rs-player-y', 'value'), Output('rs-player-color', 'value'), Output('rs-player-size', 'value')],
+    [Input('rs-player-x', 'options'), Input('rs-player-y', 'options'), Input('rs-player-color', 'options'), Input('rs-player-size', 'options')],
+)
+def rs_set_player_defaults(x_opts, y_opts, color_opts, size_opts):
+    x_default = 'VORP'
+    y_default = 'Game Score'
+    color_default = 'Position'
+    size_default = None
+    def pick(opts, want):
+        if not opts or want is None:
+            return None
+        values = {o['value'] for o in opts}
+        return want if want in values else None
+    return pick(x_opts, x_default), pick(y_opts, y_default), pick(color_opts, color_default), size_default
+
+
+@dash.callback(
     Output('rs-team-graph', 'figure'),
     [Input('rs-data-store', 'data'), Input('rs-team-x', 'value'), Input('rs-team-y', 'value'), Input('rs-team-color', 'value'), Input('rs-team-size', 'value')]
 )
@@ -176,7 +249,11 @@ def rs_team_plot(json_payload: Optional[Dict[str, str]], x: Optional[str], y: Op
     if df.empty or not x or not y:
         return px.scatter(title='Select axes')
     size_series = preprocess_size_data(df[size]) if size and size in df.columns else None
-    return px.scatter(df, x=x, y=y, color=color if color in df.columns else None, size=size_series, hover_data=[col for col in df.columns if col not in {x, y}])
+    fig = px.scatter(df, x=x, y=y, color=color if color in df.columns else None, size=size_series,
+                     hover_name=df['Team'] if 'Team' in df.columns else None,
+                     hover_data=[col for col in df.columns if col not in {x, y}])
+    fig.update_layout(hovermode='closest')
+    return fig
 
 
 @dash.callback(
@@ -186,11 +263,48 @@ def rs_team_plot(json_payload: Optional[Dict[str, str]], x: Optional[str], y: Op
 def rs_player_plot(json_payload: Optional[Dict[str, str]], x: Optional[str], y: Optional[str], color: Optional[str], size: Optional[str]) -> Any:
     if not json_payload:
         return px.scatter(title='Loading...')
+    # Use aggregated Player Statistics for player-level stats
     df = pd.read_json(StringIO(json_payload['player_stats']), orient='split') if 'player_stats' in json_payload else pd.DataFrame()
     if df.empty or not x or not y:
         return px.scatter(title='Select axes')
     size_series = preprocess_size_data(df[size]) if size and size in df.columns else None
-    return px.scatter(df, x=x, y=y, color=color if color in df.columns else None, size=size_series, hover_data=[col for col in df.columns if col not in {x, y}])
+    fig = px.scatter(df, x=x, y=y, color=color if color in df.columns else None, size=size_series,
+                     hover_name=df['Name'] if 'Name' in df.columns else None,
+                     hover_data=[col for col in df.columns if col not in {x, y}])
+    fig.update_layout(hovermode='closest')
+    return fig
+
+
+@dash.callback(
+    Output('rs-team-graph', 'figure', allow_duplicate=True),
+    [Input('rs-team-text-toggle', 'value'), Input('rs-data-store', 'data'), Input('rs-team-x', 'value'), Input('rs-team-y', 'value'), Input('rs-team-color', 'value'), Input('rs-team-size', 'value')],
+    prevent_initial_call=True
+)
+def rs_team_text_labels(toggle, json_payload, x, y, color, size):
+    fig = rs_team_plot(json_payload, x, y, color, size)
+    show = bool(toggle and 'on' in toggle)
+    df = pd.read_json(StringIO(json_payload['team_stats']), orient='split') if json_payload and 'team_stats' in json_payload else pd.DataFrame()
+    if show and not df.empty and 'General Manager' in df.columns:
+        fig.update_traces(text=df['General Manager'], textposition='top center', textfont_size=10)
+    else:
+        fig.update_traces(text=None)
+    return fig
+
+
+@dash.callback(
+    Output('rs-player-graph', 'figure', allow_duplicate=True),
+    [Input('rs-player-text-toggle', 'value'), Input('rs-data-store', 'data'), Input('rs-player-x', 'value'), Input('rs-player-y', 'value'), Input('rs-player-color', 'value'), Input('rs-player-size', 'value')],
+    prevent_initial_call=True
+)
+def rs_player_text_labels(toggle, json_payload, x, y, color, size):
+    fig = rs_player_plot(json_payload, x, y, color, size)
+    show = bool(toggle and 'on' in toggle)
+    df = pd.read_json(StringIO(json_payload['player_stats']), orient='split') if json_payload and 'player_stats' in json_payload else pd.DataFrame()
+    if show and not df.empty and 'Name' in df.columns:
+        fig.update_traces(text=df['Name'], textposition='top center', textfont_size=10)
+    else:
+        fig.update_traces(text=None)
+    return fig
 
 
 @dash.callback(
@@ -203,34 +317,59 @@ def rs_top_players(json_payload: Optional[Dict[str, str]]):
     df = pd.read_json(StringIO(json_payload['player_stats']), orient='split') if 'player_stats' in json_payload else pd.DataFrame()
     if df.empty:
         return "No data"
-    rank_metric: Optional[str] = None
-    for candidate in ['VORP', 'Game Score', 'Plus Minus', 'Value', 'Points']:
-        if candidate in df.columns:
-            rank_metric = candidate
-            break
-    if not rank_metric:
-        nums = df.select_dtypes(include='number')
-        rank_metric = nums.columns[:1][0] if not nums.empty else None
-    if not rank_metric:
-        return "No numeric columns to rank"
-    positions = ['PG', 'SG', 'SF', 'PF', 'C']
-    results = []
     pos_col = 'Position' if 'Position' in df.columns else None
     if not pos_col:
-        top_overall = df.sort_values(rank_metric, ascending=False).head(15)
-        show_cols = [c for c in ['Name', rank_metric] if c in top_overall.columns]
+        # Fallback: show overall top 5 with VORP/Plus Minus if available
+        sort_by = 'VORP' if 'VORP' in df.columns else ('Plus Minus' if 'Plus Minus' in df.columns else None)
+        if not sort_by:
+            nums = df.select_dtypes(include='number')
+            sort_by = nums.columns[:1][0] if not nums.empty else None
+        if not sort_by:
+            return "No numeric columns to rank"
+        top_overall = df.sort_values(sort_by, ascending=False).head(5)
+        show_cols = [c for c in ['Name', 'Team', 'VORP', 'Plus Minus'] if c in top_overall.columns]
         return dash_table.DataTable(data=top_overall[show_cols].to_dict('records'), columns=[{"name": c, "id": c} for c in show_cols])
+
+    positions = ['PG', 'SG', 'SF', 'PF', 'C']
+    tables: List[Any] = []
     for pos in positions:
-        top_pos = df[df[pos_col] == pos].sort_values(rank_metric, ascending=False).head(5)
-        top_pos = top_pos.assign(Position=pos)
-        results.append(top_pos)
-    final_df = pd.concat(results).reset_index(drop=True) if results else pd.DataFrame()
-    if final_df.empty:
+        pos_df = df[df[pos_col] == pos].copy()
+        if pos_df.empty:
+            continue
+        # Rank by VORP if available; otherwise by Plus Minus; otherwise by first numeric
+        sort_by = 'VORP' if 'VORP' in pos_df.columns else ('Plus Minus' if 'Plus Minus' in pos_df.columns else None)
+        if not sort_by:
+            nums = pos_df.select_dtypes(include='number')
+            sort_by = nums.columns[:1][0] if not nums.empty else None
+        if not sort_by:
+            continue
+        top_pos = pos_df.sort_values(sort_by, ascending=False).head(5)
+        # Columns to display: Name, Team, VORP, Plus Minus (subset to available)
+        show_cols = [c for c in ['Name', 'Team', 'VORP', 'Plus Minus'] if c in top_pos.columns]
+        # Optional rounding for readability
+        for col in ['VORP', 'Plus Minus']:
+            if col in top_pos.columns:
+                top_pos[col] = pd.to_numeric(top_pos[col], errors='coerce').round(2)
+        # Add heatmap styling on VORP and Plus Minus if present
+        styles: List[Dict[str, object]] = []
+        for hcol in ['VORP', 'Plus Minus']:
+            if hcol in top_pos.columns:
+                styles.extend(generate_heatmap_style(top_pos, hcol))
+
+        table = html.Div([
+            html.H5(pos, className="mb-2"),
+            dash_table.DataTable(
+                data=top_pos[show_cols].to_dict('records'),
+                columns=[{"name": c, "id": c} for c in show_cols],
+                style_header={'backgroundColor': 'rgb(30, 30, 30)', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'},
+                style_cell={'textAlign': 'center', 'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white', 'border': '1px solid rgb(80, 80, 80)'},
+                style_data_conditional=styles,
+            )
+        ], className="mb-3")
+        tables.append(table)
+
+    if not tables:
         return "No data"
-    show_cols = [c for c in ['Position', 'Name', rank_metric, 'Team'] if c in final_df.columns]
-    styles: List[Dict[str, object]] = []
-    if rank_metric in final_df.columns:
-        styles = generate_heatmap_style(final_df, rank_metric)
-    return dash_table.DataTable(data=final_df[show_cols].to_dict('records'), columns=[{"name": c, "id": c} for c in show_cols], style_data_conditional=styles)
+    return tables
 
 
