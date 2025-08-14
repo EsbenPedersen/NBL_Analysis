@@ -66,8 +66,10 @@ def clean_up_stats_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df.columns = df.iloc[0].astype(str)
-    df = df.drop(index=0).reset_index(drop=True)
+    # Only treat first row as header if 'Name' not already present
+    if 'Name' not in df.columns:
+        df.columns = df.iloc[0].astype(str)
+        df = df.drop(index=0).reset_index(drop=True)
 
     # 1. Basic cleanup and standardization of column names
     df.columns = [col.strip() for col in df.columns]
