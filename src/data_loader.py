@@ -63,7 +63,10 @@ if __name__ == "__main__":
 
 def get_regular_season_data() -> Dict[str, pd.DataFrame]:
     """
-    Fetches Regular Season data from the Google Sheet 'Season 24 Table + Stats'.
+    Fetches Regular Season data from Google Sheets by title.
+
+    Prefers the static copy named 'Season 24 Table + Stats COPY' and falls back to
+    'Season 24 Table + Stats' when the copy is unavailable.
 
     Returns a dictionary with cleaned DataFrames for:
     - 'standings': Team Standings
@@ -82,16 +85,13 @@ def get_regular_season_data() -> Dict[str, pd.DataFrame]:
 
     client = gspread.authorize(creds)
 
-    # Prefer a specific spreadsheet key if provided (more robust than title)
-    sheet_key = os.environ.get('REGULAR_SEASON_SHEET_KEY')
+    # Open by title; prefer the COPY placeholder to avoid permission issues
     try:
-        if sheet_key:
-            sh = client.open_by_key(sheet_key)
-        else:
-            # sh = client.open('Season 24 Table + Stats')
-            ## Temporarily use a copy of the sheet to avoid permissioning issues with the original sheet
+        try:
             sh = client.open('Season 24 Table + Stats COPY')
-    except gspread.SpreadsheetNotFound as exc:
+        except gspread.SpreadsheetNotFound:
+            sh = client.open('Season 24 Table + Stats')
+    except gspread.SpreadsheetNotFound:
         # Return empty frames so app still runs; UI will show 'No data'
         return {'standings': pd.DataFrame(), 'team_stats': pd.DataFrame(), 'player_stats': pd.DataFrame()}
 

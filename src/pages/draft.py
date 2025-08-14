@@ -99,12 +99,16 @@ def toggle_filters_collapse(n: Optional[int], is_open: Optional[bool]) -> Option
     [Input('interval-component', 'n_intervals'), Input('refresh-data-btn', 'n_clicks')]
 )
 def update_data_store(n_intervals: int, n_clicks: Optional[int]) -> str:
-    raw_data = get_google_sheets_data()
-    processed_data = process_data(raw_data)
-    for col in processed_data.columns:
-        if pd.api.types.is_numeric_dtype(processed_data[col]):
-            processed_data[col] = processed_data[col].fillna(0)
-    return processed_data.to_json(date_format='iso', orient='split')
+    try:
+        raw_data = get_google_sheets_data()
+        processed_data = process_data(raw_data)
+        for col in processed_data.columns:
+            if pd.api.types.is_numeric_dtype(processed_data[col]):
+                processed_data[col] = processed_data[col].fillna(0)
+        return processed_data.to_json(date_format='iso', orient='split')
+    except Exception:
+        # Gracefully handle missing credentials or network issues
+        return ""
 
 
 @dash.callback(
