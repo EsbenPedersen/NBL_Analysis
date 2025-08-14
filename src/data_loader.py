@@ -3,6 +3,7 @@ from google.oauth2.service_account import Credentials
 from gspread_dataframe import get_as_dataframe
 import pandas as pd
 from typing import Dict
+import logging
 import os
 import json
 
@@ -88,9 +89,11 @@ def get_regular_season_data() -> Dict[str, pd.DataFrame]:
     # Open by title; prefer the COPY placeholder to avoid permission issues
     try:
         try:
-            sh = client.open('Copy of Season 24 Table + Stats')
+            sh = client.open('Season 24 Table + Stats COPY')
+            logging.info("Using regular season sheet: 'Season 24 Table + Stats COPY'")
         except gspread.SpreadsheetNotFound:
             sh = client.open('Season 24 Table + Stats')
+            logging.info("Using regular season sheet: 'Season 24 Table + Stats'")
     except gspread.SpreadsheetNotFound:
         # Return empty frames so app still runs; UI will show 'No data'
         return {'standings': pd.DataFrame(), 'team_stats': pd.DataFrame(), 'player_stats': pd.DataFrame()}
