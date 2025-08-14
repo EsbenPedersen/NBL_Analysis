@@ -497,19 +497,20 @@ def rs_top_players(json_payload: Optional[Dict[str, str]]):
                 styles.extend(generate_heatmap_style(top_pos, hcol))
 
         table = html.Div([
-            html.H5(pos, className="mb-2"),
+            html.H5(pos, className="mb-2 text-center"),
             dash_table.DataTable(
                 data=top_pos[show_cols].to_dict('records'),
                 columns=[{"name": c, "id": c} for c in show_cols],
                 style_header={'backgroundColor': 'rgb(30, 30, 30)', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center', 'fontSize': '12px', 'padding': '4px 6px'},
                 style_cell={'textAlign': 'center', 'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white', 'border': '1px solid rgb(80, 80, 80)', 'fontSize': '12px', 'padding': '4px 6px'},
                 style_data_conditional=styles,
+                style_table={'width': '100%'},
             )
         ])
-        cols.append(dbc.Col(table, xs=12, sm=6, md=4, lg=2))
+        cols.append(dbc.Col(table, xs=12, sm=6, md=4, lg=2, className="d-flex flex-column", style={'flex': '1 1 18%'}))
 
     if not cols:
         return "No data"
-    return dbc.Row(cols, className="g-2")
+    return dbc.Row(cols, className="g-2 justify-content-between")
 
 
