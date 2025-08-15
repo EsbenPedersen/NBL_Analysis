@@ -2,14 +2,14 @@ import pandas as pd
 import numpy as np
 import re
 import logging
-from typing import Dict
+from typing import Dict, Optional, Tuple, List
 from src.advanced_stats import calculate_advanced_stats
 from fuzzywuzzy import process as fuzzy_process, fuzz
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def _get_best_match(target: str, candidates: list[str], score_cutoff: int = 80) -> tuple[str | None, int]:
+def _get_best_match(target: str, candidates: List[str], score_cutoff: int = 80) -> Tuple[Optional[str], int]:
     """
     Gets the best fuzzy match for a target string from a list of candidates.
     Returns a tuple of (best_match, score).
@@ -66,8 +66,10 @@ def clean_up_stats_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df.columns = df.iloc[0].astype(str)
-    df = df.drop(index=0).reset_index(drop=True)
+    # Only treat first row as header if 'Name' not already present
+    if 'Name' not in df.columns:
+        df.columns = df.iloc[0].astype(str)
+        df = df.drop(index=0).reset_index(drop=True)
 
     # 1. Basic cleanup and standardization of column names
     df.columns = [col.strip() for col in df.columns]
