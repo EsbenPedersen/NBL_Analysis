@@ -231,7 +231,6 @@ def get_regular_season_data() -> Dict[str, pd.DataFrame]:
     standings_df = _read_sheet('Team Standings')
     team_stats_df = _read_sheet('Team Statistics')
     player_stats_df = _read_sheet('Player Statistics')
-    all_stats_df = _read_sheet('All Stats')
 
     # Clean numeric columns
     def _coerce_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
@@ -297,7 +296,7 @@ def get_regular_season_data() -> Dict[str, pd.DataFrame]:
     team_stats_df = _drop_team_averages(team_stats_df)
     team_stats_df = _coerce_numeric_cols(team_stats_df)
 
-    from src.data_processing import clean_up_stats_df  # reuse for player stats
+    from src.data_processing import clean_up_stats_df  # reuse for stats sheets
     player_stats_df = clean_up_stats_df(player_stats_df)
 
     # If Position is missing from player or all stats, try to map from Draft Snapshot sheets
@@ -393,6 +392,201 @@ def get_regular_season_data() -> Dict[str, pd.DataFrame]:
             return stats_df
 
     player_stats_df = _attach_gm_from_draft(player_stats_df)
+
+    # Attach mappings from the centralized Season 24 Mapping spreadsheet
+    def _attach_season24_mapping(stats_df: pd.DataFrame) -> pd.DataFrame:
+        if stats_df.empty:
+            return stats_df
+        try:
+            mapping_sh = client.open('Season 24 Mapping')
+        except gspread.SpreadsheetNotFound:
+            logging.info("'Season 24 Mapping' not found; skipping mapping enrichment")
+            return stats_df
+
+        def _read_ws(sh, title: str) -> pd.DataFrame:
+            try:
+                ws = sh.worksheet(title)
+            except gspread.WorksheetNotFound:
+                return pd.DataFrame()
+            values = ws.get_all_values()
+            if not values:
+                return pd.DataFrame()
+            dfm = pd.DataFrame(values)
+            if dfm.empty:
+                return dfm
+            dfm.columns = dfm.iloc[0].astype(str)
+            dfm = dfm.drop(index=0).reset_index(drop=True)
+            dfm.columns = [c.strip() for c in dfm.columns]
+            return dfm
+
+        prp = _read_ws(mapping_sh, 'player_rating_position')
+        ptm = _read_ws(mapping_sh, 'player_team_manager')
+
+        # Normalize columns
+        if not prp.empty:
+            col_map = {}
+            for c in prp.columns:
+                lc = str(c).strip().lower()
+                if lc in {'player', 'player name', 'name'}:
+                    col_map[c] = 'Name'
+                elif lc in {'rating', 'overall rating', 'overall'}:
+                    col_map[c] = 'Overall Rating'
+                elif lc in {'position', 'pos'}:
+                    col_map[c] = 'Position'
+            prp = prp.rename(columns=col_map)
+            prp = prp[[c for c in ['Name', 'Overall Rating', 'Position'] if c in prp.columns]]
+        if not ptm.empty:
+            col_map = {}
+            for c in ptm.columns:
+                lc = str(c).strip().lower()
+                if lc in {'player', 'player name', 'name'}:
+                    col_map[c] = 'Name'
+                elif lc in {'general manager', 'manager', 'gm'}:
+                    col_map[c] = 'General Manager'
+                elif lc in {'team', 'franchise'}:
+                    col_map[c] = 'Team'
+                elif lc in {'abbreviation', 'abbr', 'tm'}:
+                    col_map[c] = 'Abbreviation'
+            ptm = ptm.rename(columns=col_map)
+            ptm = ptm[[c for c in ['Name', 'General Manager', 'Team', 'Abbreviation'] if c in ptm.columns]]
+
+        if prp.empty and ptm.empty:
+            return stats_df
+
+        from src.data_processing import _standardize_name  # type: ignore
+        base = stats_df.copy()
+        base['name_key'] = base['Name'].astype(str).apply(_standardize_name) if 'Name' in base.columns else ''
+
+        if not prp.empty:
+            prp = prp.copy()
+            prp['name_key'] = prp['Name'].astype(str).apply(_standardize_name)
+            base = pd.merge(base, prp.drop(columns=['Name'], errors='ignore'), on='name_key', how='left', suffixes=('', '_map'))
+            # Fill fields from mapping
+            if 'Overall Rating_map' in base.columns:
+                base['Overall Rating'] = pd.to_numeric(base.get('Overall Rating', pd.Series(index=base.index)), errors='coerce')
+                base['Overall Rating'] = base['Overall Rating'].fillna(pd.to_numeric(base['Overall Rating_map'], errors='coerce'))
+                base.drop(columns=['Overall Rating_map'], inplace=True, errors='ignore')
+            if 'Position_map' in base.columns:
+                base['Position'] = base.get('Position').fillna(base['Position_map']) if 'Position' in base.columns else base['Position_map']
+                base.drop(columns=['Position_map'], inplace=True, errors='ignore')
+
+        if not ptm.empty:
+            ptm = ptm.copy()
+            ptm['name_key'] = ptm['Name'].astype(str).apply(_standardize_name)
+            base = pd.merge(base, ptm.drop(columns=['Name'], errors='ignore'), on='name_key', how='left', suffixes=('', '_map2'))
+            for tgt in ['Team', 'General Manager', 'Abbreviation']:
+                map_col = f'{tgt}_map2'
+                if map_col in base.columns:
+                    base[tgt] = base.get(tgt).fillna(base[map_col]) if tgt in base.columns else base[map_col]
+                    base.drop(columns=[map_col], inplace=True, errors='ignore')
+
+        # Add missing players from mapping (so roster shows players with no stats yet)
+        mapping_union = pd.DataFrame()
+        union_sources = []
+        if not prp.empty:
+            union_sources.append(prp[['Name']].copy())
+        if not ptm.empty:
+            union_sources.append(ptm[['Name']].copy())
+        if union_sources:
+            mapping_union = pd.concat(union_sources, ignore_index=True).drop_duplicates()
+        if not mapping_union.empty:
+            mapping_union['name_key'] = mapping_union['Name'].astype(str).apply(_standardize_name)
+            present_keys = set(base['name_key'])
+            missing = mapping_union[~mapping_union['name_key'].isin(present_keys)]
+            if not missing.empty:
+                # Build rows from mapping info
+                add_rows = missing.copy()
+                # Attach attributes from mappings if available
+                if not prp.empty:
+                    add_rows = pd.merge(add_rows, prp[['name_key', 'Overall Rating', 'Position']], on='name_key', how='left')
+                if not ptm.empty:
+                    add_rows = pd.merge(add_rows, ptm[['name_key', 'Team', 'General Manager', 'Abbreviation']], on='name_key', how='left')
+                # Ensure required columns exist
+                for col in ['Position', 'Team', 'General Manager', 'Abbreviation', 'Overall Rating']:
+                    if col not in add_rows.columns:
+                        add_rows[col] = pd.NA
+                # Align to base columns
+                keep_cols = [c for c in base.columns if c != 'name_key']
+                # Build new frame with base columns
+                new_frame = pd.DataFrame(columns=base.columns)
+                for _, r in add_rows.iterrows():
+                    row = {k: pd.NA for k in base.columns}
+                    row['name_key'] = r['name_key']
+                    row['Name'] = r.get('Name', pd.NA)
+                    row['Position'] = r.get('Position', pd.NA)
+                    row['Team'] = r.get('Team', pd.NA)
+                    row['General Manager'] = r.get('General Manager', pd.NA)
+                    row['Abbreviation'] = r.get('Abbreviation', pd.NA)
+                    row['Overall Rating'] = r.get('Overall Rating', pd.NA)
+                    new_frame.loc[len(new_frame)] = row
+                base = pd.concat([base, new_frame], ignore_index=True)
+
+        base.drop(columns=['name_key'], inplace=True, errors='ignore')
+        return base
+
+    player_stats_df = _attach_season24_mapping(player_stats_df)
+
+    # Optionally attach centralized roster mapping (Player-Position-Team-Manager)
+    def _attach_roster_mapping(stats_df: pd.DataFrame) -> pd.DataFrame:
+        if stats_df.empty or 'Name' not in stats_df.columns:
+            return stats_df
+        try:
+            mapping_title = os.environ.get('ROSTER_MAPPING_SHEET_NAME', 'Roster Mapping')
+            try:
+                roster_ws = _find_worksheet(mapping_title)
+                # If not found by title in the same workbook, try open by name
+                if roster_ws is None:
+                    roster_sh = client.open(mapping_title)  # may raise
+                    # prefer first worksheet
+                    roster_ws = roster_sh.worksheets()[0]
+            except Exception:
+                return stats_df
+            values = roster_ws.get_all_values()
+            if not values:
+                return stats_df
+            rm = pd.DataFrame(values)
+            if rm.empty:
+                return stats_df
+            # First row header
+            rm.columns = rm.iloc[0].astype(str)
+            rm = rm.drop(index=0).reset_index(drop=True)
+            # Normalize expected columns
+            col_map = {}
+            for c in rm.columns:
+                lc = str(c).strip().lower()
+                if lc in {'player', 'name'}:
+                    col_map[c] = 'Name'
+                elif lc in {'position', 'pos'}:
+                    col_map[c] = 'Position'
+                elif lc in {'team', 'franchise'}:
+                    col_map[c] = 'Team'
+                elif lc in {'general manager', 'manager', 'gm'}:
+                    col_map[c] = 'General Manager'
+            if col_map:
+                rm = rm.rename(columns=col_map)
+            required = [c for c in ['Name', 'Position', 'Team', 'General Manager'] if c in rm.columns]
+            if not required:
+                return stats_df
+            # Standardized key merge
+            from src.data_processing import _standardize_name  # type: ignore
+            rm = rm[[c for c in ['Name', 'Position', 'Team', 'General Manager'] if c in rm.columns]].copy()
+            rm['name_key'] = rm['Name'].astype(str).apply(_standardize_name)
+            enriched = stats_df.copy()
+            enriched['name_key'] = enriched['Name'].astype(str).apply(_standardize_name)
+            merged = pd.merge(enriched, rm.drop(columns=['Name'], errors='ignore'), on='name_key', how='left', suffixes=('', '_map'))
+            merged.drop(columns=['name_key'], inplace=True, errors='ignore')
+            # Fill missing core fields from mapping
+            for tgt_col in ['Position', 'Team', 'General Manager']:
+                map_col = f"{tgt_col}_map"
+                if map_col in merged.columns:
+                    merged[tgt_col] = merged[tgt_col].fillna(merged[map_col]) if tgt_col in merged.columns else merged[map_col]
+                    merged.drop(columns=[map_col], inplace=True, errors='ignore')
+            return merged
+        except Exception as exc:
+            logging.warning("Failed to attach roster mapping: %s", exc)
+            return stats_df
+
+    player_stats_df = _attach_roster_mapping(player_stats_df)
 
     result = {
         'standings': standings_df,

@@ -150,6 +150,28 @@ def _standardize_name(name: str) -> str:
     parts.sort()
     return ''.join(parts)
 
+def normalize_person_name(name: str) -> str:
+    """
+    Normalize human names for display in 'First Last' format.
+    - Trims whitespace
+    - Converts 'Last, First' -> 'First Last'
+    - Collapses internal whitespace and applies title casing
+    """
+    if not isinstance(name, str):
+        return ''
+    text = name.strip()
+    if not text:
+        return ''
+    # Handle 'Last, First' → 'First Last'
+    if ',' in text:
+        parts = [p.strip() for p in text.split(',') if p is not None]
+        if len(parts) == 2 and parts[0] and parts[1]:
+            text = f"{parts[1]} {parts[0]}"
+    # Collapse multiple spaces
+    text = ' '.join(text.split())
+    # Title case
+    return text.title()
+
 def process_data(dataframes: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     """
     Processes the raw data from Google Sheets into a single DataFrame

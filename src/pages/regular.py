@@ -102,7 +102,21 @@ layout = html.Div([
                 dbc.Col(dcc.Dropdown(id='rs-team-select', placeholder='Select Team'), md=6),
                 dbc.Col(dbc.Input(id='rs-trade-topn', type='number', value=3, min=1, max=10, step=1, placeholder='Top N per Position'), md=3),
             ], className='mb-3 g-2'),
-            html.Div(id='rs-trade-table')
+            html.Div(id='rs-trade-summary', className='mb-3'),
+            dbc.Row([
+                dbc.Col(dbc.Card([
+                    dbc.CardHeader(html.H5("Current Roster")),
+                    dbc.CardBody(html.Div(id='rs-trade-underperformers'))
+                ]), md=6),
+                dbc.Col(dbc.Card([
+                    dbc.CardHeader(html.H5("Ideal Trade Targets")),
+                    dbc.CardBody(html.Div(id='rs-trade-ideal'))
+                ]), md=6),
+            ], className='mb-3'),
+            dbc.Card([
+                dbc.CardHeader(html.H5("Budget Trade Targets")),
+                dbc.CardBody(html.Div(id='rs-trade-budget'))
+            ])
         ])
     ], className="mb-4"),
 ])
@@ -249,90 +263,361 @@ def rs_team_select_default(options: Optional[List[Dict[str, str]]]) -> Optional[
 
 
 @dash.callback(
-    Output('rs-trade-table', 'children'),
+    [Output('rs-trade-summary', 'children'),
+     Output('rs-trade-underperformers', 'children'),
+     Output('rs-trade-ideal', 'children'),
+     Output('rs-trade-budget', 'children')],
     [Input('rs-team-select', 'value'), Input('rs-trade-topn', 'value'), Input('rs-data-store', 'data')]
 )
-def rs_trade_suggestions(team_name: Optional[str], topn: Optional[int], json_payload: Optional[Dict[str, str]]):
+def rs_trade_suggestions(team_name: Optional[str], topn: Optional[int], json_payload: Optional[Dict[str, str]]) -> Tuple[Any, Any, Any, Any]:
     if not json_payload or not team_name:
-        return "Select a team to see trade targets"
+        return "Select a team to see trade targets", "", "", ""
     team_stats = pd.read_json(StringIO(json_payload['team_stats']), orient='split') if 'team_stats' in json_payload else pd.DataFrame()
     player_stats = pd.read_json(StringIO(json_payload['player_stats']), orient='split') if 'player_stats' in json_payload else pd.DataFrame()
     if team_stats.empty or player_stats.empty:
-        return "No data"
+        return "No data", "", "", ""
 
     # Identify team abbreviation if available
     # Determine the team key for player_stats robustly
     if 'Team' in player_stats.columns:
-        team_key = 'Team'
+        team_key: Optional[str] = 'Team'
     elif 'Abbreviation' in player_stats.columns:
         team_key = 'Abbreviation'
     else:
-        # Try to infer common variants
-        candidates = [c for c in player_stats.columns if c.lower() in {'team', 'abbreviation', 'abbr', 'tm'}]
-        team_key = candidates[0] if candidates else None
+        candidates_keys = [c for c in player_stats.columns if c.lower() in {'team', 'abbreviation', 'abbr', 'tm'}]
+        team_key = candidates_keys[0] if candidates_keys else None
     if not team_key:
-        return "Player stats missing team identifier column"
+        return "Player stats missing team identifier column", "", "", ""
     opp_key = team_key
     abbr_col = 'Abbreviation' if 'Abbreviation' in team_stats.columns else None
-    gm_col = 'General Manager' if 'General Manager' in team_stats.columns else None
-    selected = team_stats[team_stats[team_key] == team_name]
+    selected = team_stats[team_stats[team_key] == team_name] if team_key in team_stats.columns else pd.DataFrame()
     if selected.empty and abbr_col:
-        # try matching against abbreviation
         selected = team_stats[team_stats[abbr_col] == team_name]
-        team_key = abbr_col or team_key
     if selected.empty:
-        return "Team not found"
+        return "Team not found", "", "", ""
 
-    # Derive weaknesses: use VORP as player strength metric; aggregate by position for selected team
     pos_col = 'Position' if 'Position' in player_stats.columns else None
     if not pos_col:
-        return "Position data unavailable; cannot compute trade targets"
+        return "Position data unavailable; cannot compute trade targets", "", "", ""
     topn = int(topn or 3)
 
-    # Players on selected team
-    players_on_team = player_stats[player_stats[team_key] == team_name]
-    if players_on_team.empty and abbr_col and abbr_col in selected.columns:
-        players_on_team = player_stats[player_stats[team_key] == selected.iloc[0][abbr_col]]
+    # Players on selected team (robust across team/gm/abbr with case-insensitive match)
+    p_team_col = 'Team' if 'Team' in player_stats.columns else None
+    p_abbr_col = 'Abbreviation' if 'Abbreviation' in player_stats.columns else None
+    p_gm_col = 'General Manager' if 'General Manager' in player_stats.columns else None
+    p_header_col = 'DraftTeamHeader' if 'DraftTeamHeader' in player_stats.columns else None
+    sel_abbr_val = selected.iloc[0][abbr_col] if (abbr_col and abbr_col in selected.columns) else None
+    sel_team_val = selected.iloc[0]['Team'] if 'Team' in selected.columns else team_name
+    sel_gm_val = selected.iloc[0]['General Manager'] if 'General Manager' in selected.columns else None
 
-    # Compute current team strength per position (median VORP)
-    team_pos_strength = players_on_team.groupby(pos_col)['VORP'].median().rename('team_pos_vorp') if 'VORP' in players_on_team.columns else pd.Series(dtype=float)
+    def _ci_eq(series: pd.Series, wanted: Optional[str]) -> pd.Series:
+        if not wanted or series is None:
+            return pd.Series(False, index=player_stats.index)
+        return series.astype(str).str.strip().str.lower() == str(wanted).strip().lower()
 
-    # Candidate pool: players not on selected team
-    candidates = player_stats[player_stats[opp_key] != team_name]
-    if abbr_col and not candidates.empty:
-        candidates = candidates[candidates[opp_key] != selected.iloc[0][abbr_col]] if abbr_col in selected.columns else candidates
+    masks: List[pd.Series] = []
+    if p_team_col:
+        masks.append(_ci_eq(player_stats[p_team_col], team_name))
+        masks.append(_ci_eq(player_stats[p_team_col], sel_team_val))
+        if sel_abbr_val is not None:
+            masks.append(_ci_eq(player_stats[p_team_col], sel_abbr_val))
+    if p_abbr_col:
+        masks.append(_ci_eq(player_stats[p_abbr_col], team_name))
+        if sel_abbr_val is not None:
+            masks.append(_ci_eq(player_stats[p_abbr_col], sel_abbr_val))
+    if p_gm_col and sel_gm_val:
+        masks.append(_ci_eq(player_stats[p_gm_col], sel_gm_val))
+    if p_header_col and sel_gm_val:
+        # Header often begins with GM name
+        series = player_stats[p_header_col].astype(str).str.strip().str.lower()
+        masks.append(series.str.startswith(str(sel_gm_val).strip().lower()))
 
-    # For each position, compute gap vs top available players by VORP
-    results: List[pd.DataFrame] = []
+    players_on_team = pd.DataFrame()
+    if masks:
+        combined = masks[0]
+        for m in masks[1:]:
+            combined = combined | m
+        players_on_team = player_stats[combined].copy()
+    if not players_on_team.empty:
+        players_on_team = players_on_team.drop_duplicates()
+
+    # Helper: find columns by fuzzy name
+    def _find_col(df: pd.DataFrame, needles: List[str]) -> Optional[str]:
+        for col in df.columns:
+            lc = str(col).lower()
+            for n in needles:
+                if n in lc:
+                    return col
+        return None
+
+    # Determine team weaknesses using Off/Def Ratings if available; otherwise try proxies
+    off_col = _find_col(team_stats, ['offensive rating', 'off rating', 'offrtg', 'off rtg', 'off efficiency', 'off eff'])
+    def_col = _find_col(team_stats, ['defensive rating', 'def rating', 'defrtg', 'def rtg', 'def efficiency', 'def eff'])
+    net_col = _find_col(team_stats, ['net rating', 'net efficiency', 'net eff'])
+    ppp_col = _find_col(team_stats, ['points per possession', 'pts per possession', 'ppp'])
+    opp_ppp_col = _find_col(team_stats, ['opponent points per possession', 'opp points per possession', 'opp ppp'])
+    ppg_col = _find_col(team_stats, ['points per game', 'pts per game', 'ppg'])
+    opp_ppg_col = _find_col(team_stats, ['opponent points per game', 'opp points per game', 'opp ppg'])
+
+    needs: List[str] = []
+    summary_bits: List[str] = []
+    try:
+        row = selected.iloc[0]
+        if off_col and off_col in team_stats.columns:
+            off_mean = pd.to_numeric(team_stats[off_col], errors='coerce').mean()
+            off_std = pd.to_numeric(team_stats[off_col], errors='coerce').std()
+            off_val = pd.to_numeric(pd.Series([row[off_col]]), errors='coerce').iloc[0]
+            if pd.notna(off_val) and pd.notna(off_mean):
+                if off_val < off_mean - (0.35 * (off_std if pd.notna(off_std) else 0)):
+                    needs.append('offense')
+                    summary_bits.append(f"Offense below league average ({off_col}: {off_val:.2f})")
+        if def_col and def_col in team_stats.columns:
+            def_mean = pd.to_numeric(team_stats[def_col], errors='coerce').mean()
+            def_std = pd.to_numeric(team_stats[def_col], errors='coerce').std()
+            def_val = pd.to_numeric(pd.Series([row[def_col]]), errors='coerce').iloc[0]
+            if pd.notna(def_val) and pd.notna(def_mean):
+                if def_val > def_mean + (0.35 * (def_std if pd.notna(def_std) else 0)):
+                    needs.append('defense')
+                    summary_bits.append(f"Defense below league average ({def_col}: {def_val:.2f})")
+        if not needs and net_col and net_col in team_stats.columns:
+            net_mean = pd.to_numeric(team_stats[net_col], errors='coerce').mean()
+            net_std = pd.to_numeric(team_stats[net_col], errors='coerce').std()
+            net_val = pd.to_numeric(pd.Series([row[net_col]]), errors='coerce').iloc[0]
+            if pd.notna(net_val) and pd.notna(net_mean) and net_val < net_mean - (0.35 * (net_std if pd.notna(net_std) else 0)):
+                needs = ['offense', 'defense']
+                summary_bits.append(f"Overall efficiency below average ({net_col}: {net_val:.2f})")
+    except Exception:
+        pass
+    if not needs:
+        # Try PPP/PPG proxies
+        try:
+            row = selected.iloc[0]
+            if ppp_col and opp_ppp_col and ppp_col in team_stats.columns and opp_ppp_col in team_stats.columns:
+                ppp_mean = pd.to_numeric(team_stats[ppp_col], errors='coerce').mean()
+                opp_ppp_mean = pd.to_numeric(team_stats[opp_ppp_col], errors='coerce').mean()
+                ppp_val = pd.to_numeric(pd.Series([row[ppp_col]]), errors='coerce').iloc[0]
+                opp_ppp_val = pd.to_numeric(pd.Series([row[opp_ppp_col]]), errors='coerce').iloc[0]
+                if pd.notna(ppp_val) and pd.notna(ppp_mean) and ppp_val < ppp_mean:
+                    needs.append('offense')
+                    summary_bits.append(f"Offense below league average ({ppp_col}: {ppp_val:.2f})")
+                if pd.notna(opp_ppp_val) and pd.notna(opp_ppp_mean) and opp_ppp_val > opp_ppp_mean:
+                    needs.append('defense')
+                    summary_bits.append(f"Defense below league average ({opp_ppp_col}: {opp_ppp_val:.2f})")
+        except Exception:
+            pass
+    if not needs:
+        try:
+            row = selected.iloc[0]
+            if ppg_col and opp_ppg_col and ppg_col in team_stats.columns and opp_ppg_col in team_stats.columns:
+                ppg_mean = pd.to_numeric(team_stats[ppg_col], errors='coerce').mean()
+                opp_ppg_mean = pd.to_numeric(team_stats[opp_ppg_col], errors='coerce').mean()
+                ppg_val = pd.to_numeric(pd.Series([row[ppg_col]]), errors='coerce').iloc[0]
+                opp_ppg_val = pd.to_numeric(pd.Series([row[opp_ppg_col]]), errors='coerce').iloc[0]
+                if pd.notna(ppg_val) and pd.notna(ppg_mean) and ppg_val < ppg_mean:
+                    needs.append('offense')
+                    summary_bits.append(f"Offense below league average ({ppg_col}: {ppg_val:.2f})")
+                if pd.notna(opp_ppg_val) and pd.notna(opp_ppg_mean) and opp_ppg_val > opp_ppg_mean:
+                    needs.append('defense')
+                    summary_bits.append(f"Defense below league average ({opp_ppg_col}: {opp_ppg_val:.2f})")
+        except Exception:
+            pass
+    if not needs:
+        needs = ['offense', 'defense']
+        summary_bits.append("Metrics missing for this team; assuming balanced needs")
+
+    # Build value metric with fallbacks and ensure it has variance and non-null data
+    preferred_metrics = ['VORP', 'Plus Minus', 'Game Score', 'Overall Rating', 'PER', 'TS%', 'EFG%']
+    value_metric: Optional[str] = None
+    for m in preferred_metrics:
+        if m in player_stats.columns:
+            series = pd.to_numeric(player_stats[m], errors='coerce')
+            if series.notna().sum() >= 3 and series.std(skipna=True) > 0:
+                value_metric = m
+                break
+    if value_metric is None:
+        nums_df = player_stats.select_dtypes(include='number')
+        for col in nums_df.columns:
+            series = pd.to_numeric(nums_df[col], errors='coerce')
+            if series.notna().sum() >= 3 and series.std(skipna=True) > 0:
+                value_metric = col
+                break
+
+    # Compute team position strength (median of value_metric)
+    team_pos_strength = pd.Series(dtype=float)
+    if value_metric and not players_on_team.empty:
+        try:
+            team_pos_strength = players_on_team.groupby(pos_col)[value_metric].median().rename('team_pos_strength')
+        except Exception:
+            team_pos_strength = pd.Series(dtype=float)
+
+    # Prepare candidate pool: players not on selected team
+    candidates = player_stats.copy()
+    if p_team_col and p_team_col in candidates.columns:
+        candidates = candidates[candidates[p_team_col] != team_name]
+        if sel_abbr_val is not None:
+            candidates = candidates[candidates[p_team_col] != sel_abbr_val]
+    if p_abbr_col and p_abbr_col in candidates.columns:
+        candidates = candidates[candidates[p_abbr_col] != team_name]
+        if sel_abbr_val is not None:
+            candidates = candidates[candidates[p_abbr_col] != sel_abbr_val]
+
+    # Ensure Stocks exists if possible
+    if 'Stocks' not in candidates.columns and {'Steals', 'Blocks'}.issubset(set(candidates.columns)):
+        try:
+            candidates['Stocks'] = pd.to_numeric(candidates['Steals'], errors='coerce').fillna(0) + pd.to_numeric(candidates['Blocks'], errors='coerce').fillna(0)
+        except Exception:
+            pass
+
+    # Fit scoring using z-scores
+    def _z(s: pd.Series) -> pd.Series:
+        s_num = pd.to_numeric(s, errors='coerce')
+        mean = s_num.mean()
+        std = s_num.std()
+        if pd.isna(std) or std == 0:
+            return pd.Series(0, index=s.index)
+        return (s_num - mean) / std
+
+    offense_cols = [c for c in ['Points', 'Assists', 'FG Attempted', 'FG Attempt', 'EFG%', 'TS%'] if c in candidates.columns]
+    if 'FG Attempted' not in offense_cols and 'FG Attempt' in offense_cols:
+        # unify naming
+        candidates.rename(columns={'FG Attempt': 'FG Attempted'}, inplace=True)
+        offense_cols = [c if c != 'FG Attempt' else 'FG Attempted' for c in offense_cols]
+    defense_cols = [c for c in ['Rebounds', 'Blocks', 'Steals', 'Stocks'] if c in candidates.columns]
+
+    if not offense_cols and not defense_cols:
+        return "Insufficient player metrics to compute fit", "", "", ""
+
+    # Compose fit score
+    off_fit = pd.Series(0, index=candidates.index)
+    if offense_cols:
+        off_fit = sum((_z(candidates[c]) for c in offense_cols)) / float(len(offense_cols))
+    def_fit = pd.Series(0, index=candidates.index)
+    if defense_cols:
+        def_fit = sum((_z(candidates[c]) for c in defense_cols)) / float(len(defense_cols))
+
+    if set(needs) == {'offense'}:
+        candidates['FitScore'] = off_fit
+    elif set(needs) == {'defense'}:
+        candidates['FitScore'] = def_fit
+    else:
+        candidates['FitScore'] = 0.5 * off_fit + 0.5 * def_fit
+
+    # Ideal: top by FitScore per position
+    ideal_rows: List[pd.DataFrame] = []
     for pos, grp in candidates.groupby(pos_col):
-        if 'VORP' not in grp.columns or grp.empty:
-            continue
-        top_avail = grp.sort_values('VORP', ascending=False).head(topn)
-        current_vorp = float(team_pos_strength.get(pos, 0.0)) if not team_pos_strength.empty else 0.0
-        top_avail = top_avail.assign(
-            Position=pos,
-            CurrentTeamStrength=current_vorp,
-            UpgradeDelta=(top_avail['VORP'] - current_vorp).round(2)
+        pick = grp.sort_values('FitScore', ascending=False).head(topn)
+        ideal_rows.append(pick)
+    ideal_df = pd.concat(ideal_rows, ignore_index=True) if ideal_rows else pd.DataFrame()
+
+    # Budget: below 60th percentile by value_metric, but high FitScore
+    budget_df = pd.DataFrame()
+    if value_metric and value_metric in candidates.columns and not candidates.empty:
+        vm = pd.to_numeric(candidates[value_metric], errors='coerce')
+        threshold = vm.quantile(0.60)
+        budget_pool = candidates[vm <= threshold]
+        b_rows: List[pd.DataFrame] = []
+        for pos, grp in budget_pool.groupby(pos_col):
+            pick = grp.sort_values('FitScore', ascending=False).head(topn)
+            b_rows.append(pick)
+        budget_df = pd.concat(b_rows, ignore_index=True) if b_rows else pd.DataFrame()
+
+    # Current roster table (include players with zero minutes or missing stats)
+    roster_df = pd.DataFrame()
+    if not players_on_team.empty:
+        roster_df = players_on_team.copy()
+        # Prefer sorting by Minutes if available
+        min_col = next((c for c in roster_df.columns if str(c).lower() in {'minutes', 'mins'}), None)
+        if min_col:
+            roster_df[min_col] = pd.to_numeric(roster_df[min_col], errors='coerce')
+            roster_df = roster_df.sort_values(min_col, ascending=False)
+
+    def _make_table(
+        df: pd.DataFrame,
+        cols_priority: List[str]
+    ) -> Any:
+        if df is None or df.empty:
+            return "No data"
+
+        show_cols: List[str] = [c for c in cols_priority if c in df.columns]
+        default_cols = ['Name', 'Team', pos_col, 'FitScore', 'VORP', 'Overall Rating',
+                        'Points', 'Assists', 'Rebounds', 'Stocks', 'EFG%', 'TS%']
+        for c in default_cols:
+            if c and c in df.columns and c not in show_cols:
+                show_cols.append(c)
+
+        if not show_cols:
+            show_cols = list(df.columns)
+
+        df_display = df.loc[:, show_cols].copy()
+        num_cols = df_display.select_dtypes(include="number").columns
+        df_display[num_cols] = df_display[num_cols].apply(pd.to_numeric, errors='coerce').round(3)
+
+        styles: List[Dict[str, Any]] = []
+        for hcol in ['FitScore', 'VORP', 'Overall Rating']:
+            if hcol in df_display.columns:
+                styles.extend(generate_heatmap_style(df_display, hcol))
+
+        return dash_table.DataTable(
+            data=df_display.to_dict('records'),
+            columns=[{"name": c, "id": c} for c in df_display.columns],
+            style_header={
+                'backgroundColor': 'rgb(30, 30, 30)',
+                'color': 'white',
+                'fontWeight': 'bold',
+                'textAlign': 'center'
+            },
+            style_cell={
+                'textAlign': 'center',
+                'backgroundColor': 'rgb(50, 50, 50)',
+                'color': 'white',
+                'border': '1px solid rgb(80, 80, 80)'
+            },
+            style_data_conditional=styles,
+            page_size=20,
         )
-        results.append(top_avail[['Position', 'Name', 'VORP', 'UpgradeDelta']])
 
-    if not results:
-        return "No candidates found"
-    out = pd.concat(results, ignore_index=True)
-    out = out.sort_values(['UpgradeDelta', 'VORP'], ascending=[False, False]).reset_index(drop=True)
+    def _make_roster_table(df: pd.DataFrame) -> Any:
+        if df.empty:
+            return "No data"
+        # Normalize display names
+        try:
+            from src.data_processing import normalize_person_name  # type: ignore
+            if 'Name' in df.columns:
+                df = df.copy()
+                df['Name'] = df['Name'].astype(str).apply(normalize_person_name)
+            if 'General Manager' in df.columns:
+                df['General Manager'] = df['General Manager'].astype(str).apply(normalize_person_name)
+        except Exception:
+            pass
+        desired_cols = ['Name', pos_col or 'Position', 'Team', 'General Manager', 'Minutes', 'Points', 'Assists', 'Rebounds', 'Blocks', 'Steals', 'Stocks', 'EFG%', 'TS%', 'Plus Minus', 'VORP', 'Overall Rating']
+        show_cols = [c for c in desired_cols if c in df.columns]
+        if not show_cols:
+            show_cols = list(df.columns)
+        disp = df[show_cols].copy()
+        # Round numerics; then replace NaN with '-'
+        for c in disp.columns:
+            if pd.api.types.is_numeric_dtype(disp[c]):
+                disp[c] = pd.to_numeric(disp[c], errors='coerce').round(3)
+        disp = disp.where(pd.notna(disp), '-')
+        return dash_table.DataTable(
+            data=disp.to_dict('records'),
+            columns=[{"name": c, "id": c} for c in disp.columns],
+            style_header={'backgroundColor': 'rgb(30, 30, 30)', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'},
+            style_cell={'textAlign': 'center', 'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white', 'border': '1px solid rgb(80, 80, 80)'},
+            page_size=20,
+        )
 
-    styles: List[Dict[str, object]] = []
-    for hcol in ['VORP', 'UpgradeDelta']:
-        if hcol in out.columns:
-            styles.extend(generate_heatmap_style(out, hcol))
+    # Build summary text
+    summary_text = "; ".join(summary_bits) if summary_bits else "Balanced needs"
+    summary = html.Div([
+        html.Strong("Team Needs: "), html.Span(summary_text)
+    ])
 
-    return dash_table.DataTable(
-        data=out.to_dict('records'),
-        columns=[{"name": c, "id": c} for c in out.columns],
-        style_header={'backgroundColor': 'rgb(30, 30, 30)', 'color': 'white', 'fontWeight': 'bold', 'textAlign': 'center'},
-        style_cell={'textAlign': 'center', 'backgroundColor': 'rgb(50, 50, 50)', 'color': 'white', 'border': '1px solid rgb(80, 80, 80)'},
-        style_data_conditional=styles,
-        page_size=20,
+    return (
+        summary,
+        _make_roster_table(roster_df),
+        _make_table(ideal_df, ['Name', pos_col or 'Position', 'Team', 'FitScore', value_metric or '']),
+        _make_table(budget_df, ['Name', pos_col or 'Position', 'Team', 'FitScore', value_metric or ''])
     )
 
 
