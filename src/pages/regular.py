@@ -67,7 +67,7 @@ layout = html.Div([
                         md=12
                     )
                 ], className='mb-2'),
-                dcc.Graph(id='rs-team-graph', style={'height': '50vh', 'width': '100%'}, config={'responsive': True})
+                dcc.Graph(id='rs-team-graph', style={'height': '50vh', 'width': '100%'})
             ])
         ]), md=6),
         dbc.Col(dbc.Card([
@@ -90,7 +90,7 @@ layout = html.Div([
                         md=12
                     )
                 ], className='mb-2'),
-                dcc.Graph(id='rs-player-graph', style={'height': '50vh', 'width': '100%'}, config={'responsive': True})
+                dcc.Graph(id='rs-player-graph', style={'height': '50vh', 'width': '100%'})
             ])
         ]), md=6),
     ], className="mb-4"),
@@ -381,9 +381,14 @@ def rs_team_plot(json_payload: Optional[Dict[str, str]], x: Optional[str], y: Op
     if df.empty or not x or not y:
         return px.scatter(title='Select axes')
     size_series = preprocess_size_data(df[size]) if size and size in df.columns else None
-    fig = px.scatter(df, x=x, y=y, color=color if color in df.columns else None, size=size_series,
-                     hover_name=df['Team'] if 'Team' in df.columns else None,
-                     hover_data=[col for col in df.columns if col not in {x, y}])
+    hover_data = [c for c in df.columns if c not in {x, y}]
+    gm_series = df['General Manager'] if 'General Manager' in df.columns else None
+    try:
+        fig = px.scatter(df, x=x, y=y, color=color if color in df.columns else None,
+                         size=size_series, text=gm_series, hover_data=hover_data)
+    except Exception:
+        fig = px.scatter(df, x=x, y=y, color=color if color in df.columns else None, size=size_series, hover_data=hover_data)
+    fig.update_traces(textposition='top center', textfont_size=10)
     fig.update_layout(hovermode='closest')
     return fig
 
@@ -400,9 +405,14 @@ def rs_player_plot(json_payload: Optional[Dict[str, str]], x: Optional[str], y: 
     if df.empty or not x or not y:
         return px.scatter(title='Select axes')
     size_series = preprocess_size_data(df[size]) if size and size in df.columns else None
-    fig = px.scatter(df, x=x, y=y, color=color if color in df.columns else None, size=size_series,
-                     hover_name=df['Name'] if 'Name' in df.columns else None,
-                     hover_data=[col for col in df.columns if col not in {x, y}])
+    hover_data = [c for c in df.columns if c not in {x, y}]
+    try:
+        fig = px.scatter(df, x=x, y=y, color=color if color in df.columns else None,
+                         size=size_series, text=df['Name'] if 'Name' in df.columns else None,
+                         hover_data=hover_data)
+    except Exception:
+        fig = px.scatter(df, x=x, y=y, color=color if color in df.columns else None, size=size_series, hover_data=hover_data)
+    fig.update_traces(textposition='top center', textfont_size=10)
     fig.update_layout(hovermode='closest')
     return fig
 
@@ -413,11 +423,12 @@ def rs_player_plot(json_payload: Optional[Dict[str, str]], x: Optional[str], y: 
     prevent_initial_call=True
 )
 def rs_team_text_labels(toggle, json_payload, x, y, color, size):
+    # Rebuild from base df to guarantee consistent text-length with data
+    df = pd.read_json(StringIO(json_payload['team_stats']), orient='split') if json_payload and 'team_stats' in json_payload else pd.DataFrame()
     fig = rs_team_plot(json_payload, x, y, color, size)
     show = bool(toggle and 'on' in toggle)
-    df = pd.read_json(StringIO(json_payload['team_stats']), orient='split') if json_payload and 'team_stats' in json_payload else pd.DataFrame()
     if show and not df.empty and 'General Manager' in df.columns:
-        fig.update_traces(text=df['General Manager'], textposition='top center', textfont_size=10)
+        fig.update_traces(text=df['General Manager'])
     else:
         fig.update_traces(text=None)
     return fig
@@ -429,11 +440,11 @@ def rs_team_text_labels(toggle, json_payload, x, y, color, size):
     prevent_initial_call=True
 )
 def rs_player_text_labels(toggle, json_payload, x, y, color, size):
+    df = pd.read_json(StringIO(json_payload['player_stats']), orient='split') if json_payload and 'player_stats' in json_payload else pd.DataFrame()
     fig = rs_player_plot(json_payload, x, y, color, size)
     show = bool(toggle and 'on' in toggle)
-    df = pd.read_json(StringIO(json_payload['player_stats']), orient='split') if json_payload and 'player_stats' in json_payload else pd.DataFrame()
     if show and not df.empty and 'Name' in df.columns:
-        fig.update_traces(text=df['Name'], textposition='top center', textfont_size=10)
+        fig.update_traces(text=df['Name'])
     else:
         fig.update_traces(text=None)
     return fig

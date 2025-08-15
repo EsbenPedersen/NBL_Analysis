@@ -11,8 +11,8 @@ import time
 
 _DRAFT_CACHE: Dict[str, object] = {"data": None, "ts": 0.0}
 _REGULAR_CACHE: Dict[str, object] = {"data": None, "ts": 0.0}
-_DRAFT_TTL_SECONDS: int = int(os.environ.get("DRAFT_SHEETS_TTL_SECONDS", "300"))
-_REGULAR_TTL_SECONDS: int = int(os.environ.get("REGULAR_SHEETS_TTL_SECONDS", "300"))
+_DRAFT_TTL_SECONDS: int = int(os.environ.get("DRAFT_SHEETS_TTL_SECONDS", "5000"))
+_REGULAR_TTL_SECONDS: int = int(os.environ.get("REGULAR_SHEETS_TTL_SECONDS", "5000"))
 
 
 def get_google_sheets_data() -> Dict[str, pd.DataFrame]:
@@ -272,6 +272,29 @@ def get_regular_season_data() -> Dict[str, pd.DataFrame]:
         return cleaned
 
     standings_df = _coerce_numeric_cols(standings_df)
+    # Drop the League Average summary row in Team Statistics (second line) if present
+    def _drop_team_averages(df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+        temp = df.copy()
+        team_col = 'Team' if 'Team' in temp.columns else None
+        gm_col = 'General Manager' if 'General Manager' in temp.columns else None
+        abbr_col = 'Abbreviation' if 'Abbreviation' in temp.columns else None
+        if team_col or gm_col:
+            mask = pd.Series(False, index=temp.index)
+            if team_col:
+                mask = mask | temp[team_col].astype(str).str.strip().str.lower().eq('league')
+            if gm_col:
+                mask = mask | temp[gm_col].astype(str).str.strip().str.lower().eq('average')
+            if abbr_col:
+                mask = mask | temp[abbr_col].astype(str).str.strip().eq('')
+            dropped = int(mask.sum())
+            if dropped:
+                logging.info("Dropping %d 'League Average' summary rows from Team Statistics", dropped)
+                temp = temp[~mask].reset_index(drop=True)
+        return temp
+
+    team_stats_df = _drop_team_averages(team_stats_df)
     team_stats_df = _coerce_numeric_cols(team_stats_df)
 
     from src.data_processing import clean_up_stats_df  # reuse for player stats
